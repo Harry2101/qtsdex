@@ -197,7 +197,7 @@ def _auto_lock_embed(
         description=(
             f"A **{incense_type} Incense** was detected in {channel.mention}.\n\n"
             f"The channel has been **automatically locked** — "
-            f"Operation Dex cannot spawn Pokémon here until the incense is resumed.\n\n"
+            f"Pokémons can't spawn here until the incense is resumed.\n\n"
             f"*Waiting for the organizer to resume when all channels are ready.*"
         ),
         colour=0xFF6B35,
@@ -568,7 +568,7 @@ class IncenseCog(commands.Cog):
         if success:
             embed = discord.Embed(
                 title="🔒 Channel Locked",
-                description=f"{ch.mention} has been locked. Operation Dex cannot spawn here.",
+                description=f"{ch.mention} has been locked. Pokémons can't spawn here.",
                 colour=0xFF6B35,
             )
             embed.set_footer(text="QT's Dex  •  Incense Manager")
