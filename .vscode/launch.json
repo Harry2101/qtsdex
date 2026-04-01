@@ -2,7 +2,7 @@
   "version": "0.2.0",
   "configurations": [
     {
-      "name": "Run QT's Dex",
+      "name": "Run King's Dex",
       "type": "debugpy",
       "request": "launch",
       "program": "${workspaceFolder}/bot.py",

@@ -96,7 +96,7 @@ class WeaknessCog(commands.Cog):
             if types_list:
                 embed.add_field(name=label_str, value=_fmt(types_list), inline=False)
 
-        embed.set_footer(text="QT's Dex  •  Gen 6+ rules  •  powered by PokéAPI")
+        embed.set_footer(text="King's Dex  •  Gen 6+ rules  •  powered by PokéAPI")
         await interaction.followup.send(embed=embed)
 
 

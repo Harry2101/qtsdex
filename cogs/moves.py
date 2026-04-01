@@ -155,7 +155,7 @@ def _move_detail_embed(data: dict) -> discord.Embed:
     embed.add_field(name="🎯 Target",   value=target,                inline=True)
     if effect:
         embed.add_field(name="📖 Effect", value=effect[:500], inline=False)
-    embed.set_footer(text="QT's Dex  •  Move Details  •  powered by PokéAPI")
+    embed.set_footer(text="King's Dex  •  Move Details  •  powered by PokéAPI")
     return embed
 
 
@@ -264,7 +264,7 @@ class MovesView(discord.ui.View):
 
         e = discord.Embed(title=title, description=content, colour=colour)
         e.set_footer(
-            text=f"QT's Dex  •  Page {self.current+1}/{len(self._pages)}  •  {total} moves"
+            text=f"King's Dex  •  Page {self.current+1}/{len(self._pages)}  •  {total} moves"
                  + (f"  •  {active.title()} only" if active else "")
         )
         return e

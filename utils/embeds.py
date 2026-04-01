@@ -5,7 +5,7 @@ Shared embed helpers, colours, emoji, and stat rendering.
 
 import discord
 
-FOOTER = "QT's Dex • powered by PokéAPI"
+FOOTER = "King's Dex • powered by PokéAPI"
 
 TYPE_COLOURS: dict[str, int] = {
     "normal":   0xA8A77A, "fire":     0xEE8130, "water":    0x6390F0,

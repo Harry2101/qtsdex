@@ -86,7 +86,7 @@ class MoveLookupCog(commands.Cog):
         if flavor:
             embed.add_field(name="📜 Game Description", value=f"*{flavor[:300]}*", inline=False)
 
-        footer = f"QT's Dex  •  Category: {category.title()}" if category else "QT's Dex • powered by PokéAPI"
+        footer = f"King's Dex  •  Category: {category.title()}" if category else "King's Dex • powered by PokéAPI"
         embed.set_footer(text=footer)
         return embed
 

@@ -190,7 +190,7 @@ def _checklist_embed(
             embed.add_field(name="\u200b", value="🎉 All caught!", inline=False)
 
     embed.set_footer(
-        text=f"QT's Dex  •  {user.display_name}  •  {sort_label}  •  powered by PokéAPI"
+        text=f"King's Dex  •  {user.display_name}  •  {sort_label}  •  powered by PokéAPI"
     )
     return embed
 

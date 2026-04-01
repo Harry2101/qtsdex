@@ -22,7 +22,7 @@ class SettingsCog(commands.Cog):
 
     @app_commands.command(
         name="settings",
-        description="Personalise how QT's Dex displays Pokémon stats.",
+        description="Personalise how King's Dex displays Pokémon stats.",
     )
     async def settings_cmd(self, interaction: discord.Interaction):
         # get() now sanitises old "tiers" → "numbers" automatically
@@ -32,14 +32,14 @@ class SettingsCog(commands.Cog):
             current = "numbers"
 
         embed = discord.Embed(
-            title="⚙️  QT's Dex — Your Settings",
+            title="⚙️  King's Dex — Your Settings",
             description=(
                 f"**Current stat style:** {STYLES[current]}\n\n"
                 "Pick a new style below — takes effect immediately on `/pokemon`."
             ),
             colour=0x5865F2,
         )
-        embed.set_footer(text="QT's Dex  •  Settings persist across sessions")
+        embed.set_footer(text="King's Dex  •  Settings persist across sessions")
         await interaction.response.send_message(
             embed=embed,
             view=SettingsView(interaction.user.id, current),
@@ -70,7 +70,7 @@ class SettingsView(discord.ui.View):
                 ),
                 colour=0x57F287,
             )
-            embed.set_footer(text="QT's Dex  •  Settings persist across sessions")
+            embed.set_footer(text="King's Dex  •  Settings persist across sessions")
             await interaction.response.edit_message(embed=embed, view=None)
         return cb
 

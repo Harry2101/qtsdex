@@ -237,7 +237,7 @@ def build_battle_embed(
         inline=False,
     )
 
-    embed.set_footer(text="QT's Dex  •  Battle Card  •  powered by PokéAPI")
+    embed.set_footer(text="King's Dex  •  Battle Card  •  powered by PokéAPI")
     return embed
 
 

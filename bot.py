@@ -1,5 +1,5 @@
 """
-QT's Dex — Main entry point.
+King's Dex — Main entry point.
 """
 
 import asyncio
@@ -87,7 +87,7 @@ class QTsDex(commands.Bot):
 
     async def on_ready(self):
         log.info(f"\n{'='*52}")
-        log.info(f"  🤖  QT's Dex  •  {self.user}  (ID: {self.user.id})")
+        log.info(f"  🤖  King's Dex  •  {self.user}  (ID: {self.user.id})")
         log.info(f"{'='*52}")
 
         raw       = os.getenv("DEV_GUILD_IDS", "").strip()

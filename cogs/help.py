@@ -9,7 +9,7 @@ from discord.ext import commands
 
 QT_GUILD_ID = 1477887017034584248   # QT clan server — incense commands shown here only
 
-FOOTER = "QT's Dex  •  powered by PokéAPI"
+FOOTER = "King's Dex  •  powered by PokéAPI"
 
 
 class HelpCog(commands.Cog):
@@ -21,7 +21,7 @@ class HelpCog(commands.Cog):
         is_qt_server = interaction.guild_id == QT_GUILD_ID
 
         embed = discord.Embed(
-            title="📖  QT's Dex — Command Reference",
+            title="📖  King's Dex — Command Reference",
             description=(
                 "Your all-in-one Pokémon companion for PvP, dex lookups and clan operations.\n"
                 "All slash commands support autocomplete — just start typing!"

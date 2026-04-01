@@ -1,4 +1,4 @@
-# 🎮 QT's Dex
+# 🎮 King's Dex
 
 A production-grade Discord bot for Pokémon PvP assistance and clan management — built for the QTs clan.
 
@@ -52,7 +52,7 @@ Includes a full **Pokédex lookup system** and a **Mass Incense Management syste
 ## 🌿 Incense System — How It Works
 
 ### Auto-lock
-When **Operation Dex bot** (ID: `1471263987340410978`) sends an "Incense Activated!" message in a **registered incense channel**, QT's Dex automatically:
+When **Operation Dex bot** (ID: `1471263987340410978`) sends an "Incense Activated!" message in a **registered incense channel**, King's Dex automatically:
 1. Records the incense (type, spawn count) in the database
 2. Denies `Send Messages` for Operation Dex in that channel — locking it
 3. Posts a notification in the channel
@@ -146,7 +146,7 @@ Expected startup output:
 ✅ Loaded cogs.incense
 ...
 🔄 Synced 22 commands to guild ...
-🤖 QT's Dex ready
+🤖 King's Dex ready
 ```
 
 ### Step 7 — Invite & Configure

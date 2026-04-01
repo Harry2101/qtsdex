@@ -123,7 +123,7 @@ def _pause_embed(locked, already, failed, no_inc) -> discord.Embed:
             value="\n".join(f"<#{c}>" for c in failed[:10]),
             inline=False,
         )
-    embed.set_footer(text="QT's Dex  •  Incense Manager")
+    embed.set_footer(text="King's Dex  •  Incense Manager")
     return embed
 
 
@@ -153,7 +153,7 @@ def _resume_embed(unlocked, already, failed) -> discord.Embed:
             value="\n".join(f"<#{c}>" for c in failed[:10]),
             inline=False,
         )
-    embed.set_footer(text="QT's Dex  •  Incense Manager")
+    embed.set_footer(text="King's Dex  •  Incense Manager")
     return embed
 
 
@@ -171,7 +171,7 @@ def _auto_lock_embed(channel, incense_type, total_spawns) -> discord.Embed:
     if total_spawns:
         embed.add_field(name="📊 Total Spawns", value=str(total_spawns), inline=True)
     embed.add_field(name="📍 Channel", value=channel.mention, inline=True)
-    embed.set_footer(text="QT's Dex  •  Use !resume to start all incenses simultaneously")
+    embed.set_footer(text="King's Dex  •  Use !resume to start all incenses simultaneously")
     return embed
 
 
@@ -367,7 +367,7 @@ class IncenseCog(commands.Cog):
                     ),
                     colour=0x57F287,
                 )
-                embed.set_footer(text="QT's Dex  •  Incense Manager")
+                embed.set_footer(text="King's Dex  •  Incense Manager")
                 await ch.send(embed=embed)
             except discord.Forbidden:
                 pass
@@ -396,7 +396,7 @@ class IncenseCog(commands.Cog):
                 value="\n".join(f"`{i}`" for i in invalid[:10]),
                 inline=False,
             )
-        embed.set_footer(text="QT's Dex  •  Use /inc_status to see all registered channels")
+        embed.set_footer(text="King's Dex  •  Use /inc_status to see all registered channels")
         await ctx.send(embed=embed)
 
     # ── /inc_add ──────────────────────────────────────────────────────────────
@@ -414,7 +414,7 @@ class IncenseCog(commands.Cog):
                 description=f"{channel.mention} is now an incense channel.",
                 colour=0x57F287,
             )
-            embed.set_footer(text="QT's Dex  •  Incense Manager")
+            embed.set_footer(text="King's Dex  •  Incense Manager")
             await interaction.response.send_message(embed=embed)
             try:
                 notify = discord.Embed(
@@ -425,7 +425,7 @@ class IncenseCog(commands.Cog):
                     ),
                     colour=0x57F287,
                 )
-                notify.set_footer(text="QT's Dex  •  Incense Manager")
+                notify.set_footer(text="King's Dex  •  Incense Manager")
                 await channel.send(embed=notify)
             except discord.Forbidden:
                 pass
@@ -486,7 +486,7 @@ class IncenseCog(commands.Cog):
                 description=f"{ch.mention} has been locked. Pokémon cannot spawn here.",
                 colour=0xFF6B35,
             )
-            embed.set_footer(text="QT's Dex  •  Incense Manager")
+            embed.set_footer(text="King's Dex  •  Incense Manager")
             await interaction.followup.send(embed=embed)
         else:
             await interaction.followup.send(
@@ -527,7 +527,7 @@ class IncenseCog(commands.Cog):
                 description=f"{ch.mention} is now live. Pokémon will start spawning! 🎉",
                 colour=0x57F287,
             )
-            embed.set_footer(text="QT's Dex  •  Incense Manager")
+            embed.set_footer(text="King's Dex  •  Incense Manager")
             await interaction.followup.send(embed=embed)
             try:
                 await ch.send("▶️ **Incense Resumed!** Pokémon will start spawning. Good luck! 🎉")
@@ -616,7 +616,7 @@ class IncenseCog(commands.Cog):
                         ),
                         colour=0x57F287,
                     )
-                    embed.set_footer(text="QT's Dex  •  Incense Manager")
+                    embed.set_footer(text="King's Dex  •  Incense Manager")
                     await ch.send(embed=embed)
                 except discord.Forbidden:
                     pass
@@ -655,7 +655,7 @@ class IncenseCog(commands.Cog):
             if len(already) > 10:
                 preview += f" *+{len(already)-10} more*"
             embed.add_field(name=f"⏭️ Already registered ({len(already)})", value=preview, inline=False)
-        embed.set_footer(text="QT's Dex  •  Incense Manager")
+        embed.set_footer(text="King's Dex  •  Incense Manager")
         await interaction.followup.send(embed=embed)
 
     # ── /inc_status ───────────────────────────────────────────────────────────
@@ -722,7 +722,7 @@ class IncenseCog(commands.Cog):
                 value="\n".join(idle[:15]) + (f"\n*+{len(idle)-15} more*" if len(idle) > 15 else ""),
                 inline=False,
             )
-        embed.set_footer(text="QT's Dex  •  Incense Manager")
+        embed.set_footer(text="King's Dex  •  Incense Manager")
         await interaction.followup.send(embed=embed)
 
     # ── /inc_clear ────────────────────────────────────────────────────────────
