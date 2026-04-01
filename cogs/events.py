@@ -159,8 +159,10 @@ def _checklist_embed(
             lines = []
             last_fam = None
             for t in display:
-                icon = "✅" if t["id"] in caught_ids else "⬜"
+                is_caught = t["id"] in caught_ids
+                icon = "✅" if is_caught else "⬜"
                 name = t["pokemon"].replace("-", " ").title()
+                shiny = " ✨" if is_caught else ""
 
                 # Show dex number only when sorted by dex
                 dex_str = f" `#{t['dex_id']:04d}`" if (sort == "dex" and t.get("dex_id")) else ""
@@ -170,7 +172,7 @@ def _checklist_embed(
                     lines.append("")
                 last_fam = t.get("evo_family_id", 0) if sort == "evo" else None
 
-                lines.append(f"{icon}{dex_str} {name}")
+                lines.append(f"{icon}{dex_str} {name}{shiny}")
 
             # Remove leading blank lines
             while lines and lines[0] == "":
@@ -200,15 +202,17 @@ class ClearConfirmView(discord.ui.View):
         super().__init__(timeout=30)
         self.parent = parent
 
-    @discord.ui.button(label="Yes, clear my catches", style=discord.ButtonStyle.danger, emoji="🗑️")
+    @discord.ui.button(label="Yes, clear the whole list", style=discord.ButtonStyle.danger, emoji="🗑️")
     async def confirm(self, interaction: discord.Interaction, button: discord.ui.Button):
         if interaction.user.id != self.parent.user.id:
             return await interaction.response.send_message("This isn't your checklist.", ephemeral=True)
-        await events_db.clear_user_catches(self.parent.checklist_id, str(self.parent.user.id))
+        # Clear all targets (cascades catches via FK)
+        await events_db.clear_targets(self.parent.checklist_id)
+        self.parent.targets    = []
         self.parent.caught_ids = set()
         self.parent._build_buttons()
         embed = self.parent._embed()
-        embed.title = f"🗑️ Cleared  •  {embed.title}"
+        embed.title = f"🗑️ List Cleared"
         await interaction.response.edit_message(embed=embed, view=self.parent)
 
     @discord.ui.button(label="Cancel", style=discord.ButtonStyle.secondary, emoji="✖️")
@@ -309,10 +313,9 @@ class ChecklistView(discord.ui.View):
         switch.callback = self._switch
         self.add_item(switch)
 
-        if self.caught_ids:
-            clear = discord.ui.Button(label="🗑️ Clear", style=discord.ButtonStyle.danger, row=3)
-            clear.callback = self._clear
-            self.add_item(clear)
+        clear = discord.ui.Button(label="🗑️ Clear List", style=discord.ButtonStyle.danger, row=3)
+        clear.callback = self._clear
+        self.add_item(clear)
 
     def _guard(self, interaction: discord.Interaction) -> bool:
         return interaction.user.id == self.user.id
@@ -382,12 +385,14 @@ class ChecklistView(discord.ui.View):
     async def _clear(self, interaction: discord.Interaction):
         if not self._guard(interaction):
             return await interaction.response.send_message("This isn't your checklist.", ephemeral=True)
+        total = len(self.targets)
         await interaction.response.edit_message(
             embed=discord.Embed(
-                title="⚠️ Clear all your catches?",
+                title="⚠️ Clear the entire list?",
                 description=(
-                    f"Resets **{len(self.caught_ids)} catches**.\n"
-                    "Targets stay — only your progress is cleared."
+                    f"This will **permanently delete all {total} Pokémon** from this checklist "
+                    f"and reset everyone's catch progress.\n\n"
+                    f"*This cannot be undone.*"
                 ),
                 colour=0xFEE75C,
             ),
@@ -491,7 +496,7 @@ class EventsCog(commands.Cog):
             embed.add_field(name=f"Not found ({len(not_found)})",
                             value=", ".join(not_found[:15]), inline=False)
 
-        embed.set_footer(text=f"King's Dex  •  {total_now} Pokémon on list  •  powered by PokéAPI")
+        embed.set_footer(text=f"QT's Dex  •  {total_now} Pokémon on list  •  powered by PokéAPI")
 
         if added and unique:
             sprite = await _get_sprite(unique[0][0])

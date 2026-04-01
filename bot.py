@@ -34,6 +34,7 @@ COGS = [
     "cogs.events",
     # ── Incense Manager ───────────────────────────────────────────────────────
     "cogs.incense",
+    "cogs.help",
 ]
 
 
