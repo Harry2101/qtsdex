@@ -68,7 +68,6 @@ Once all channels have locked their incenses, the organizer runs `!resume` to un
 
 ### Who Can Use Incense Commands
 - Role ID `1483594894713946212` (Organizer role) — full access
-- User ID `145065060568530944` (owner) — always has full access, cannot be restricted
 
 ---
 

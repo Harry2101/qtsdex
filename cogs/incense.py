@@ -631,105 +631,142 @@ class IncenseCog(commands.Cog):
             )
 
     # ── Slash: /inc_set_recursive ─────────────────────────────────────────────
-
-    @app_commands.command(
-        name="inc_set_recursive",
-        description="Set every channel AFTER this one (by position) as an incense channel.",
-    )
-    @app_commands.describe(
-        include_current="Also include the channel this command is run in (default: False)"
-    )
-    async def inc_set_recursive(
-        self,
-        interaction: discord.Interaction,
-        include_current: bool = False,
-    ):
-        if not _is_authorised(interaction):
-            return await interaction.response.send_message(
-                "🚫 You need the **Organizer** role.", ephemeral=True
-            )
-
-        await interaction.response.defer(thinking=True)
-
-        guild    = interaction.guild
-        guild_id = str(guild.id)
-        current  = interaction.channel
-
-        # Get all text channels sorted by position
-        text_channels = sorted(
-            [c for c in guild.channels if isinstance(c, discord.TextChannel)],
-            key=lambda c: (c.category.position if c.category else -1, c.position),
+@app_commands.command(
+    name="inc_set_recursive",
+    description="Set channels after this one as incense channels, optionally up to an end channel.",
+)
+@app_commands.describe(
+    include_current="Also include the channel this command is run in (default: False)",
+    until_channel="Optional last channel to include in the recursive registration",
+)
+async def inc_set_recursive(
+    self,
+    interaction: discord.Interaction,
+    include_current: bool = False,
+    until_channel: discord.TextChannel | None = None,
+):
+    if not _is_authorised(interaction):
+        return await interaction.response.send_message(
+            "🚫 You need the **Organizer** role.", ephemeral=True
         )
 
-        # Find the current channel's position in the sorted list
+    await interaction.response.defer(thinking=True)
+
+    guild = interaction.guild
+    guild_id = str(guild.id)
+    current = interaction.channel
+
+    # Get all text channels sorted by category position, then channel position
+    text_channels = sorted(
+        [c for c in guild.channels if isinstance(c, discord.TextChannel)],
+        key=lambda c: (c.category.position if c.category else -1, c.position),
+    )
+
+    # Find current channel index
+    try:
+        current_idx = next(i for i, c in enumerate(text_channels) if c.id == current.id)
+    except StopIteration:
+        return await interaction.followup.send(
+            "❌ Couldn't find this channel in the server's channel list.", ephemeral=True
+        )
+
+    # Find optional end channel index
+    end_idx = len(text_channels) - 1
+    if until_channel is not None:
         try:
-            current_idx = next(i for i, c in enumerate(text_channels) if c.id == current.id)
+            end_idx = next(i for i, c in enumerate(text_channels) if c.id == until_channel.id)
         except StopIteration:
             return await interaction.followup.send(
-                "❌ Couldn't find this channel in the server's channel list.", ephemeral=True
+                "❌ Couldn't find the specified end channel in the server's channel list.",
+                ephemeral=True,
             )
 
-        start_idx = current_idx if include_current else current_idx + 1
-        targets   = text_channels[start_idx:]
+    start_idx = current_idx if include_current else current_idx + 1
 
-        if not targets:
-            return await interaction.followup.send(
-                "ℹ️ No channels found after the current one.", ephemeral=True
-            )
-
-        added   = []
-        already = []
-
-        async def register_and_notify(ch: discord.TextChannel):
-            ok = await incense_db.add_channel(guild_id, str(ch.id), str(interaction.user.id))
-            if ok:
-                added.append(ch)
-                try:
-                    embed = discord.Embed(
-                        title="🌿 Incense Channel Registered",
-                        description=(
-                            f"{ch.mention} has been registered as an **Incense Channel**.\n"
-                            "I'll automatically lock this channel when an incense is activated here."
-                        ),
-                        colour=0x57F287,
-                    )
-                    embed.set_footer(text="QT's Dex  •  Incense Manager")
-                    await ch.send(embed=embed)
-                except discord.Forbidden:
-                    pass
-            else:
-                already.append(ch)
-
-        # Process in batches of 10 to avoid rate-limit hammering
-        for i in range(0, len(targets), 10):
-            batch = targets[i:i + 10]
-            await asyncio.gather(*[register_and_notify(ch) for ch in batch])
-            if i + 10 < len(targets):
-                await asyncio.sleep(1)  # Brief pause between batches
-
-        embed = discord.Embed(
-            title="🌿 Recursive Channel Registration Complete",
-            colour=0x57F287 if added else 0xFEE75C,
+    # Validate ordering
+    if until_channel is not None and end_idx < start_idx:
+        return await interaction.followup.send(
+            "❌ The end channel must come after the start channel in server order.",
+            ephemeral=True,
         )
+
+    # Include end channel, so use end_idx + 1
+    targets = text_channels[start_idx:end_idx + 1]
+
+    if not targets:
+        return await interaction.followup.send(
+            "ℹ️ No channels found in that range.", ephemeral=True
+        )
+
+    added = []
+    already = []
+
+    async def register_and_notify(ch: discord.TextChannel):
+        ok = await incense_db.add_channel(guild_id, str(ch.id), str(interaction.user.id))
+        if ok:
+            added.append(ch)
+            try:
+                embed = discord.Embed(
+                    title="🌿 Incense Channel Registered",
+                    description=(
+                        f"{ch.mention} has been registered as an **Incense Channel**.\n"
+                        "I'll automatically lock this channel when an incense is activated here."
+                    ),
+                    colour=0x57F287,
+                )
+                embed.set_footer(text="QT's Dex  •  Incense Manager")
+                await ch.send(embed=embed)
+            except discord.Forbidden:
+                pass
+        else:
+            already.append(ch)
+
+    # Process in batches of 10 to avoid rate-limit hammering
+    for i in range(0, len(targets), 10):
+        batch = targets[i:i + 10]
+        await asyncio.gather(*[register_and_notify(ch) for ch in batch])
+        if i + 10 < len(targets):
+            await asyncio.sleep(1)
+
+    embed = discord.Embed(
+        title="🌿 Recursive Channel Registration Complete",
+        colour=0x57F287 if added else 0xFEE75C,
+    )
+
+    if until_channel:
+        embed.description = (
+            f"Scanned **{len(targets)}** channel{'s' if len(targets) != 1 else ''} "
+            f"from after {current.mention if not include_current else current.mention} "
+            f"through {until_channel.mention}."
+        )
+    else:
         embed.description = (
             f"Scanned **{len(targets)}** channel{'s' if len(targets) != 1 else ''} "
             f"after {current.mention}."
         )
-        if added:
-            count_label = f"Registered ({len(added)})"
-            preview = ", ".join(ch.mention for ch in added[:10])
-            if len(added) > 10:
-                preview += f" *+{len(added)-10} more*"
-            embed.add_field(name=f"✅ {count_label}", value=preview, inline=False)
-        if already:
-            embed.add_field(
-                name=f"⏭️ Already registered ({len(already)})",
-                value=", ".join(ch.mention for ch in already[:10]),
-                inline=False,
-            )
-        embed.set_footer(text="QT's Dex  •  Incense Manager")
-        await interaction.followup.send(embed=embed)
 
+    if added:
+        preview = ", ".join(ch.mention for ch in added[:10])
+        if len(added) > 10:
+            preview += f" *+{len(added) - 10} more*"
+        embed.add_field(
+            name=f"✅ Registered ({len(added)})",
+            value=preview,
+            inline=False,
+        )
+
+    if already:
+        preview = ", ".join(ch.mention for ch in already[:10])
+        if len(already) > 10:
+            preview += f" *+{len(already) - 10} more*"
+        embed.add_field(
+            name=f"⏭️ Already registered ({len(already)})",
+            value=preview,
+            inline=False,
+        )
+
+    embed.set_footer(text="QT's Dex  •  Incense Manager")
+    await interaction.followup.send(embed=embed)
     # ── Slash: /inc_status ────────────────────────────────────────────────────
 
     @app_commands.command(
