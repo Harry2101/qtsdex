@@ -32,7 +32,7 @@ from typing import Optional
 import discord
 from discord import app_commands
 from discord.ext import commands
-
+from typing import Optional
 from services import incense_db
 
 log = logging.getLogger("qtsdex.incense")
@@ -639,11 +639,12 @@ class IncenseCog(commands.Cog):
     include_current="Also include the channel this command is run in (default: False)",
     until_channel="Optional last channel to include in the recursive registration",
 )
+
 async def inc_set_recursive(
     self,
     interaction: discord.Interaction,
     include_current: bool = False,
-    until_channel: discord.TextChannel | None = None,
+    end_channel: Optional[discord.TextChannel] = None,
 ):
     if not _is_authorised(interaction):
         return await interaction.response.send_message(
