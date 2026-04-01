@@ -491,7 +491,7 @@ class EventsCog(commands.Cog):
             embed.add_field(name=f"Not found ({len(not_found)})",
                             value=", ".join(not_found[:15]), inline=False)
 
-        embed.set_footer(text=f"QT's Dex  •  {total_now} Pokémon on list  •  powered by PokéAPI")
+        embed.set_footer(text=f"King's Dex  •  {total_now} Pokémon on list  •  powered by PokéAPI")
 
         if added and unique:
             sprite = await _get_sprite(unique[0][0])

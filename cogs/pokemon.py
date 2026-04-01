@@ -156,7 +156,7 @@ def build_info_embed(data: dict, style: str) -> discord.Embed:
     sp = _sprite(data)
     if sp:
         embed.set_thumbnail(url=sp)
-    embed.set_footer(text=f"QT's Dex  •  {STYLE_LABELS[style]}  •  powered by PokéAPI")
+    embed.set_footer(text=f"King's Dex  •  {STYLE_LABELS[style]}  •  powered by PokéAPI")
     return embed
 
 

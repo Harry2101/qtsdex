@@ -122,7 +122,7 @@ def build_sprite_embed(data: dict, shiny: bool) -> discord.Embed:
     else:
         embed.description += "\n\n*No sprite available for this variant.*"
 
-    embed.set_footer(text=f"QT's Dex  •  Click image to zoom  •  powered by PokéAPI")
+    embed.set_footer(text=f"King's Dex  •  Click image to zoom  •  powered by PokéAPI")
     return embed
 
 
