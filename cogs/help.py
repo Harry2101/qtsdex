@@ -1,15 +1,33 @@
 """
 cogs/help.py  —  /help
-Shows all available commands. Incense section only shown in the QT clan server.
+Shows all available commands. Incense section shown to users
+who have the configured Incense Manager role (or server admins).
 """
+
+import os
 
 import discord
 from discord import app_commands
 from discord.ext import commands
 
-QT_GUILD_ID = 1477887017034584248   # QT clan server — incense commands shown here only
+from services import guild_settings_db
 
-FOOTER = "King's Dex  •  powered by PokéAPI"
+OWNER_ID = int(os.getenv("OWNER_ID", "145065060568530944"))
+FOOTER   = "King's Dex  •  powered by PokéAPI"
+
+
+async def _can_see_incense(interaction: discord.Interaction) -> bool:
+    """Check if the user should see incense commands in help."""
+    if interaction.user.id == OWNER_ID:
+        return True
+    if not interaction.guild:
+        return False
+    if interaction.user.guild_permissions.administrator:
+        return True
+    role_id = await guild_settings_db.get_incense_role(str(interaction.guild_id))
+    if role_id and any(r.id == role_id for r in getattr(interaction.user, "roles", [])):
+        return True
+    return False
 
 
 class HelpCog(commands.Cog):
@@ -18,7 +36,7 @@ class HelpCog(commands.Cog):
 
     @app_commands.command(name="help", description="Show all available commands.")
     async def help_cmd(self, interaction: discord.Interaction):
-        is_qt_server = interaction.guild_id == QT_GUILD_ID
+        show_incense = await _can_see_incense(interaction)
 
         embed = discord.Embed(
             title="📖  King's Dex — Command Reference",
@@ -34,7 +52,7 @@ class HelpCog(commands.Cog):
             name="🔍 Pokédex",
             value=(
                 "`/pokemon <name>`  — Stats, types, abilities, sprite\n"
-                "   ↳ Buttons: 🔢 Numbers · 📊 Bar · ⚔️ Battle Card · 📋 Moves\n"
+                "   ↳ Buttons: ⚔️ Battle Card · 📋 Moves\n"
                 "`/pokemon_moves <name>`  — Full paginated move list\n"
                 "   ↳ Filter by type · 🔍 Move Details · 📢 Share\n"
                 "`/move <name>`  — Power, accuracy, PP, type, effect\n"
@@ -65,48 +83,39 @@ class HelpCog(commands.Cog):
                 "   ↳ Buttons: sort A–Z · Dex # · Evo Group · Remaining · Switch list\n"
                 "`/checklist add <pokemon>`  — Add Pokémon (bulk CSV, `--evo` chains supported)\n"
                 "   ↳ Example: `/checklist add pokemon:charmander, bulbasaur`\n"
-                "   ↳ Evo chains: `/checklist add pokemon:--evo charmander`\n"
+                "   ↳ Evo chains: `/checklist add pokemon:--evo charmander, --evo bulbasaur`\n"
                 "   ↳ Toggle: `include_evolutions:True` to expand every mon to its full chain\n"
                 "`/checklist catch <pokemon>`  — Mark as caught ✅ ✨\n"
                 "`/checklist uncatch <pokemon>`  — Unmark a catch\n"
                 "`/checklist remaining`  — Show only uncaught Pokémon\n"
-                "`/checklist remove <pokemon>`  — Remove a Pokémon from the list\n"
+                "`/checklist remove <pokemon>`  — Remove Pokémon (bulk CSV + `--evo` supported)\n"
                 "`/event_setup <name>`  — Name the active event hunt (e.g. Community Day)"
             ),
             inline=False,
         )
 
-        # ── Settings ──────────────────────────────────────────────────────────
-        embed.add_field(
-            name="⚙️ Settings",
-            value=(
-                "`/settings`  — Choose your stat display style\n"
-                "   ↳ 🔢 Plain numbers · 📊 Bar chart\n"
-                "   ↳ Your preference is saved and applies to all future `/pokemon` lookups"
-            ),
-            inline=False,
-        )
-
-        # ── Incense Manager — only shown in QT server ─────────────────────────
-        if is_qt_server:
+        # ── Incense Manager — shown to authorised users ──────────────────────
+        if show_incense:
             embed.add_field(
-                name="🌿 Incense Manager  *(Organizer role required)*",
+                name="🌿 Incense Manager  *(Incense Manager role required)*",
                 value=(
+                    "**Setup (admin only):**\n"
+                    "`/incense setup role <role>`  — Set the incense manager role\n"
+                    "`/incense setup bot <id>`  — Set the Operation Dex bot ID\n"
+                    "`/incense setup view`  — View current configuration\n\n"
                     "**Prefix commands:**\n"
                     "`!pause`  — Lock all active incense channels simultaneously\n"
                     "`!resume`  — Unlock all paused incense channels simultaneously\n"
-                    "`!incset <id1> <id2> ...`  — Bulk register channels as incense channels\n"
-                    "   ↳ Accepts space or comma-separated IDs\n\n"
+                    "`!incset <id1> <id2> ...`  — Bulk register channels by ID\n\n"
                     "**Slash commands:**\n"
-                    "`/inc_add <channel>`  — Register a single incense channel\n"
-                    "`/inc_remove <channel>`  — Unregister a channel\n"
-                    "`/inc_lock [channel]`  — Lock a specific channel (defaults to current)\n"
-                    "`/inc_unlock [channel]`  — Unlock a specific channel\n"
-                    "`/inc_set_recursive`  — Register every channel after this one\n"
-                    "   ↳ Optional: `end_channel` to stop at a specific channel\n"
-                    "   ↳ Optional: `include_current:True` to include this channel too\n"
-                    "`/inc_status`  — See all channels: live / paused / idle\n"
-                    "`/inc_clear [channel]`  — Clear incense record after it expires\n\n"
+                    "`/incense add <channel>`  — Register up to 5 channels at once\n"
+                    "`/incense remove <channel>`  — Unregister a channel\n"
+                    "`/incense lock [channel]`  — Lock a specific channel\n"
+                    "`/incense unlock [channel]`  — Unlock a specific channel\n"
+                    "`/incense recursive`  — Register a range of consecutive channels\n"
+                    "`/incense status`  — See all channels: live / paused / idle\n"
+                    "`/incense clear [channel]`  — Clear incense record\n"
+                    "`/incense log [user]`  — View audit log (admin only)\n\n"
                     "**Auto-behaviour:**\n"
                     "When Operation Dex activates an incense in a registered channel,\n"
                     "the channel is locked automatically and a notification is posted."

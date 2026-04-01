@@ -32,8 +32,13 @@ def _filter(names: list[str], query: str, limit: int = 25) -> list[str]:
     q = query.lower().strip()
     if not q:
         return names[:limit]
-    prefix = [n for n in names if n.startswith(q)]
-    contains = [n for n in names if q in n and not n.startswith(q)]
+    # Also try hyphenated form so "solar beam" matches "solar-beam"
+    q_hyph = q.replace(" ", "-")
+    prefix = [n for n in names if n.startswith(q) or n.startswith(q_hyph)]
+    contains = [
+        n for n in names
+        if (q in n or q_hyph in n) and not n.startswith(q) and not n.startswith(q_hyph)
+    ]
     return (prefix + contains)[:limit]
 
 

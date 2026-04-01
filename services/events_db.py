@@ -41,15 +41,18 @@ async def init_db():
                 PRIMARY KEY (checklist_id, target_id, user_id)
             );
         """)
-        # Migrate existing DBs — safe no-ops if columns already exist
-        for col in ("dex_id INTEGER NOT NULL DEFAULT 0",
-                    "evo_family_id INTEGER NOT NULL DEFAULT 0"):
-            try:
+        # Migrate existing DBs — only add columns that don't exist yet
+        async with db.execute("PRAGMA table_info(checklist_targets)") as cur:
+            existing = {row[1] for row in await cur.fetchall()}
+        migrations = {
+            "dex_id":        "INTEGER NOT NULL DEFAULT 0",
+            "evo_family_id": "INTEGER NOT NULL DEFAULT 0",
+        }
+        for col_name, col_def in migrations.items():
+            if col_name not in existing:
                 await db.execute(
-                    f"ALTER TABLE checklist_targets ADD COLUMN {col}"
+                    f"ALTER TABLE checklist_targets ADD COLUMN {col_name} {col_def}"
                 )
-            except Exception:
-                pass
         await db.commit()
 
 

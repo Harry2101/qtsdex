@@ -82,28 +82,24 @@ def _bar(value: int) -> str:
     return "█" * filled + "░" * (_BAR_LEN - filled)
 
 
-def build_stat_lines(stats: dict[str, int], total: int, style: str) -> str:
+def build_stat_lines(stats: dict[str, int], total: int) -> str:
     """
-    Plain text stat block — emojis + labels + value/bar on each line.
-    No code block, no monospace tricks. Clean and readable.
-    style: "numbers" | "bar"
+    Plain text stat block — emojis + labels + bar + value on each line.
+    Always shows both bar chart and numeric value.
     """
     lines = []
     for key in STAT_KEYS_ORDERED:
-        val   = stats.get(key, 0)
+        val   = max(0, stats.get(key, 0))  # clamp to 0
         emoji = STAT_EMOJI[key]
-        label = f"{STAT_LABEL[key]:<7}"   # fixed width label (ASCII only, so safe)
-        if style == "bar":
-            lines.append(f"{emoji} `{label}` {_bar(val)} **{val}**")
-        else:
-            lines.append(f"{emoji} `{label}` **{val}**")
+        label = f"{STAT_LABEL[key]:<7}"    # fixed width label (ASCII only, so safe)
+        lines.append(f"{emoji} `{label}` {_bar(val)} **{val}**")
     lines.append(f"📊 `{'BST':<7}` **{total}**")
     return "\n".join(lines)
 
 
 # Keep old name as alias so nothing else breaks
-def build_stat_block(stats: dict[str, int], total: int, style: str) -> str:
-    return build_stat_lines(stats, total, style)
+def build_stat_block(stats: dict[str, int], total: int) -> str:
+    return build_stat_lines(stats, total)
 
 def stat_emoji_labels() -> str:
     """Legacy — kept for compatibility, not used in new layout."""

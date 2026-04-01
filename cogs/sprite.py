@@ -59,6 +59,9 @@ class SpriteView(discord.ui.View):
 
     def _sync(self):
         self.clear_items()
+        sprites = _get_sprites(self.data)
+        has_shiny = _pick_sprite(sprites, shiny=True) is not None
+
         normal_btn = discord.ui.Button(
             label="Normal",
             style=discord.ButtonStyle.success if not self.shiny else discord.ButtonStyle.secondary,
@@ -66,8 +69,9 @@ class SpriteView(discord.ui.View):
             row=0,
         )
         shiny_btn = discord.ui.Button(
-            label="✨ Shiny",
+            label="✨ Shiny" if has_shiny else "✨ Shiny (N/A)",
             style=discord.ButtonStyle.success if self.shiny else discord.ButtonStyle.secondary,
+            disabled=not has_shiny,
             row=0,
         )
         normal_btn.callback = self._go_normal

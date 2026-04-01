@@ -89,14 +89,22 @@ async def _get_sprite(slug: str) -> Optional[str]:
 # ── Input parser ──────────────────────────────────────────────────────────────
 
 def _parse_bulk(text: str) -> list[tuple[str, bool]]:
-    text  = text.replace("\n", ",").replace(";", ",")
+    """Parse bulk input like '--evo popplio --evo chimchar, cyndaquil'."""
+    text = text.replace("\n", ",").replace(";", ",")
     parts = [p.strip() for p in text.split(",") if p.strip()]
     out: list[tuple[str, bool]] = []
     for part in parts:
-        evo_flag = bool(re.match(r"^-{1,2}evo\s+", part, re.IGNORECASE))
-        clean    = re.sub(r"^-{1,2}evo\s+", "", part, flags=re.IGNORECASE).strip()
-        if clean:
-            out.append((normalize(clean), evo_flag))
+        # Split on --evo boundaries so "--evo popplio --evo chimchar" works
+        segments = re.split(r"-{1,2}evo\s+", part, flags=re.IGNORECASE)
+        # First segment (before any --evo) is a plain name
+        first = segments[0].strip()
+        if first:
+            out.append((normalize(first), False))
+        # Remaining segments each had --evo before them
+        for seg in segments[1:]:
+            clean = seg.strip()
+            if clean:
+                out.append((normalize(clean), True))
     return out
 
 
@@ -120,6 +128,9 @@ def _bar(caught: int, total: int, length: int = 12) -> str:
     return f"`{'█'*filled}{'░'*(length-filled)}` {caught}/{total} ({pct}%)"
 
 
+PER_PAGE = 30   # items per page (two columns of ~15)
+
+
 # ── Checklist embed ───────────────────────────────────────────────────────────
 
 def _checklist_embed(
@@ -130,7 +141,9 @@ def _checklist_embed(
     user:           discord.User | discord.Member,
     remaining_only: bool = False,
     sort:           str  = "alpha",
-) -> discord.Embed:
+    page:           int  = 0,
+) -> tuple[discord.Embed, int]:
+    """Returns (embed, total_pages)."""
     total     = len(targets)
     caught    = len(caught_ids)
     remaining = total - caught
@@ -145,54 +158,58 @@ def _checklist_embed(
 
     if total == 0:
         embed.description = "*Empty list.*\nAdd Pokémon with `/checklist add`."
-    else:
-        status = "🎉 **Complete!**" if done else f"**{remaining}** remaining"
-        embed.description = f"{_bar(caught, total)}\n{status}"
-
-        sorted_targets = _sort_targets(targets, sort)
-        display = (
-            [t for t in sorted_targets if t["id"] not in caught_ids]
-            if remaining_only else sorted_targets
+        embed.set_footer(
+            text=f"King's Dex  •  {user.display_name}  •  {sort_label}  •  powered by PokéAPI"
         )
+        return embed, 1
 
-        if display:
-            lines = []
-            last_fam = None
-            for t in display:
-                is_caught = t["id"] in caught_ids
-                icon = "✅" if is_caught else "⬜"
-                name = t["pokemon"].replace("-", " ").title()
-                shiny = " ✨" if is_caught else ""
+    status = "🎉 **Complete!**" if done else f"**{remaining}** remaining"
+    embed.description = f"{_bar(caught, total)}\n{status}"
 
-                # Show dex number only when sorted by dex
-                dex_str = f" `#{t['dex_id']:04d}`" if (sort == "dex" and t.get("dex_id")) else ""
-
-                # Blank separator between evo families when evo-sorted
-                if sort == "evo" and t.get("evo_family_id", 0) != last_fam and last_fam is not None:
-                    lines.append("")
-                last_fam = t.get("evo_family_id", 0) if sort == "evo" else None
-
-                lines.append(f"{icon}{dex_str} {name}{shiny}")
-
-            # Remove leading blank lines
-            while lines and lines[0] == "":
-                lines.pop(0)
-
-            # Two columns for long lists
-            real_lines = [l for l in lines if l]
-            if len(real_lines) > 16:
-                mid = (len(lines) + 1) // 2
-                embed.add_field(name="\u200b", value="\n".join(lines[:mid]) or "\u200b",  inline=True)
-                embed.add_field(name="\u200b", value="\n".join(lines[mid:]) or "\u200b",  inline=True)
-            else:
-                embed.add_field(name="Pokémon", value="\n".join(lines) or "\u200b", inline=False)
-        elif remaining_only:
-            embed.add_field(name="\u200b", value="🎉 All caught!", inline=False)
-
-    embed.set_footer(
-        text=f"King's Dex  •  {user.display_name}  •  {sort_label}  •  powered by PokéAPI"
+    sorted_targets = _sort_targets(targets, sort)
+    display = (
+        [t for t in sorted_targets if t["id"] not in caught_ids]
+        if remaining_only else sorted_targets
     )
-    return embed
+
+    total_pages = max(1, (len(display) + PER_PAGE - 1) // PER_PAGE)
+    page = max(0, min(page, total_pages - 1))
+
+    if display:
+        page_items = display[page * PER_PAGE : (page + 1) * PER_PAGE]
+        lines = []
+        last_fam = None
+        for t in page_items:
+            is_caught = t["id"] in caught_ids
+            icon = "✅" if is_caught else "⬜"
+            name = t["pokemon"].replace("-", " ").title()
+            shiny = " ✨" if is_caught else ""
+            dex_str = f" `#{t['dex_id']:04d}`" if (sort == "dex" and t.get("dex_id")) else ""
+
+            if sort == "evo" and t.get("evo_family_id", 0) != last_fam and last_fam is not None:
+                lines.append("")
+            last_fam = t.get("evo_family_id", 0) if sort == "evo" else None
+
+            lines.append(f"{icon}{dex_str} {name}{shiny}")
+
+        while lines and lines[0] == "":
+            lines.pop(0)
+
+        real_lines = [l for l in lines if l]
+        if len(real_lines) > 16:
+            mid = (len(lines) + 1) // 2
+            embed.add_field(name="\u200b", value="\n".join(lines[:mid]) or "\u200b",  inline=True)
+            embed.add_field(name="\u200b", value="\n".join(lines[mid:]) or "\u200b",  inline=True)
+        else:
+            embed.add_field(name="Pokémon", value="\n".join(lines) or "\u200b", inline=False)
+    elif remaining_only:
+        embed.add_field(name="\u200b", value="🎉 All caught!", inline=False)
+
+    page_str = f"  •  Page {page + 1}/{total_pages}" if total_pages > 1 else ""
+    embed.set_footer(
+        text=f"King's Dex  •  {user.display_name}  •  {sort_label}{page_str}  •  powered by PokéAPI"
+    )
+    return embed, total_pages
 
 
 # ── Clear confirmation ────────────────────────────────────────────────────────
@@ -246,10 +263,21 @@ class ChecklistView(discord.ui.View):
         self.user           = user
         self.remaining_only = remaining_only
         self.sort           = sort
+        self.page           = 0
+        self.total_pages    = 1
         self._build_buttons()
 
     def _build_buttons(self):
         self.clear_items()
+
+        # Pre-calculate total pages for pagination buttons
+        sorted_targets = _sort_targets(self.targets, self.sort)
+        display = (
+            [t for t in sorted_targets if t["id"] not in self.caught_ids]
+            if self.remaining_only else sorted_targets
+        )
+        self.total_pages = max(1, (len(display) + PER_PAGE - 1) // PER_PAGE)
+        self.page = max(0, min(self.page, self.total_pages - 1))
 
         # Row 0 — catch select
         uncaught = _sort_targets(
@@ -299,21 +327,44 @@ class ChecklistView(discord.ui.View):
             btn.callback = self._make_sort_cb(key)
             self.add_item(btn)
 
-        # Row 3 — utility
+        # Row 3 — pagination (only if multiple pages)
+        if self.total_pages > 1:
+            prev_btn = discord.ui.Button(
+                label="◀ Prev", style=discord.ButtonStyle.secondary, row=3,
+                disabled=self.page <= 0,
+            )
+            prev_btn.callback = self._prev_page
+            self.add_item(prev_btn)
+
+            page_btn = discord.ui.Button(
+                label=f"{self.page + 1}/{self.total_pages}",
+                style=discord.ButtonStyle.secondary, row=3, disabled=True,
+            )
+            self.add_item(page_btn)
+
+            next_btn = discord.ui.Button(
+                label="Next ▶", style=discord.ButtonStyle.secondary, row=3,
+                disabled=self.page >= self.total_pages - 1,
+            )
+            next_btn.callback = self._next_page
+            self.add_item(next_btn)
+
+        # Row 4 — utility (row 3 if no pagination)
+        util_row = 4 if self.total_pages > 1 else 3
         toggle = discord.ui.Button(
             label="👁️ Show All" if self.remaining_only else "👁️ Remaining",
-            style=discord.ButtonStyle.secondary, row=3,
+            style=discord.ButtonStyle.secondary, row=util_row,
         )
         toggle.callback = self._toggle_remaining
         self.add_item(toggle)
 
         other      = "event" if self.ctype == "normal" else "normal"
         switch_lbl = "✨ Event" if other == "event" else "🎯 Normal"
-        switch     = discord.ui.Button(label=f"→ {switch_lbl}", style=discord.ButtonStyle.primary, row=3)
+        switch     = discord.ui.Button(label=f"→ {switch_lbl}", style=discord.ButtonStyle.primary, row=util_row)
         switch.callback = self._switch
         self.add_item(switch)
 
-        clear = discord.ui.Button(label="🗑️ Clear List", style=discord.ButtonStyle.danger, row=3)
+        clear = discord.ui.Button(label="🗑️ Clear List", style=discord.ButtonStyle.danger, row=util_row)
         clear.callback = self._clear
         self.add_item(clear)
 
@@ -321,15 +372,30 @@ class ChecklistView(discord.ui.View):
         return interaction.user.id == self.user.id
 
     def _embed(self) -> discord.Embed:
-        return _checklist_embed(
+        embed, self.total_pages = _checklist_embed(
             self.ctype, self.label, self.targets, self.caught_ids,
-            self.user, self.remaining_only, self.sort,
+            self.user, self.remaining_only, self.sort, self.page,
         )
+        return embed
 
     async def _refresh(self, interaction: discord.Interaction):
         self.caught_ids = await events_db.get_user_catches(
             self.checklist_id, str(self.user.id)
         )
+        self._build_buttons()
+        await interaction.response.edit_message(embed=self._embed(), view=self)
+
+    async def _prev_page(self, interaction: discord.Interaction):
+        if not self._guard(interaction):
+            return await interaction.response.send_message("This isn't your checklist.", ephemeral=True)
+        self.page = max(0, self.page - 1)
+        self._build_buttons()
+        await interaction.response.edit_message(embed=self._embed(), view=self)
+
+    async def _next_page(self, interaction: discord.Interaction):
+        if not self._guard(interaction):
+            return await interaction.response.send_message("This isn't your checklist.", ephemeral=True)
+        self.page = min(self.total_pages - 1, self.page + 1)
         self._build_buttons()
         await interaction.response.edit_message(embed=self._embed(), view=self)
 
@@ -354,6 +420,7 @@ class ChecklistView(discord.ui.View):
             if not self._guard(interaction):
                 return await interaction.response.send_message("This isn't your checklist.", ephemeral=True)
             self.sort = key
+            self.page = 0
             self._build_buttons()
             await interaction.response.edit_message(embed=self._embed(), view=self)
         return cb
@@ -362,6 +429,7 @@ class ChecklistView(discord.ui.View):
         if not self._guard(interaction):
             return await interaction.response.send_message("This isn't your checklist.", ephemeral=True)
         self.remaining_only = not self.remaining_only
+        self.page = 0
         self._build_buttons()
         await interaction.response.edit_message(embed=self._embed(), view=self)
 
@@ -379,6 +447,7 @@ class ChecklistView(discord.ui.View):
         self.targets        = targets
         self.caught_ids     = caught_ids
         self.remaining_only = False
+        self.page           = 0
         self._build_buttons()
         await interaction.edit_original_response(embed=self._embed(), view=self)
 
@@ -507,22 +576,67 @@ class EventsCog(commands.Cog):
 
     # /checklist remove ───────────────────────────────────────────────────────
 
-    @checklist.command(name="remove", description="Remove a Pokémon from a checklist.")
-    @app_commands.describe(list_type="Which checklist", pokemon="Pokémon to remove")
+    @checklist.command(name="remove", description="Remove Pokémon. Supports bulk CSV and --evo chains.")
+    @app_commands.describe(
+        pokemon="Names, CSV, or '--evo name' for full evo chains",
+        list_type="Which checklist",
+        include_evolutions="Remove full evo chains for every Pokémon listed",
+    )
     @app_commands.choices(list_type=LIST_CHOICES)
     @app_commands.autocomplete(pokemon=_list_pokemon_ac)
     async def cl_remove(
         self,
-        interaction: discord.Interaction,
-        pokemon:     str,
-        list_type:   str = "normal",
+        interaction:        discord.Interaction,
+        pokemon:            str,
+        list_type:          str  = "normal",
+        include_evolutions: bool = False,
     ):
-        cl      = await events_db.ensure_checklist(GLOBAL_ID, list_type)
-        ok, msg = await events_db.remove_pokemon(cl["id"], pokemon)
-        await interaction.response.send_message(
-            embed=discord.Embed(description=msg, colour=0x57F287 if ok else 0xED4245),
-            ephemeral=not ok,
+        await interaction.response.defer(thinking=True)
+
+        cl     = await events_db.ensure_checklist(GLOBAL_ID, list_type)
+        parsed = _parse_bulk(pokemon)
+        if not parsed:
+            return await interaction.followup.send(
+                embed=error_embed("Bad Input", "Couldn't parse any Pokémon names."), ephemeral=True
+            )
+
+        to_remove: list[str] = []
+
+        async def resolve(slug: str, want_evo: bool):
+            if want_evo or include_evolutions:
+                chain, _ = await _get_evo_chain(slug)
+                to_remove.extend(chain)
+            else:
+                to_remove.append(slug)
+
+        await asyncio.gather(*[resolve(slug, evo) for slug, evo in parsed])
+
+        # Deduplicate
+        seen: set[str] = set()
+        unique = [s for s in to_remove if not (s in seen or seen.add(s))]
+
+        removed: list[str] = []
+        not_on_list: list[str] = []
+        for slug in unique:
+            ok, _ = await events_db.remove_pokemon(cl["id"], slug)
+            (removed if ok else not_on_list).append(slug.replace("-", " ").title())
+
+        total_now  = await events_db.count_targets(cl["id"])
+        list_label = "✨ Event Hunt" if list_type == "event" else "🎯 Normal Grind"
+
+        embed = discord.Embed(
+            title=f"{'🗑️' if removed else '⚠️'}  {list_label}",
+            colour=0x57F287 if removed else 0xFEE75C,
         )
+        if removed:
+            display = ", ".join(removed[:30]) + (f" *+{len(removed)-30} more*" if len(removed) > 30 else "")
+            embed.add_field(name=f"Removed ({len(removed)})", value=display, inline=False)
+        if not_on_list:
+            display = ", ".join(not_on_list[:15])
+            embed.add_field(name=f"Not on list ({len(not_on_list)})", value=display, inline=False)
+
+        embed.set_footer(text=f"King's Dex  •  {total_now} Pokémon remaining  •  powered by PokéAPI")
+        await interaction.followup.send(embed=embed)
 
     # /checklist view ─────────────────────────────────────────────────────────
 

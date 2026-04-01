@@ -19,6 +19,7 @@ TTL = 86400  # 24 hours in seconds
 _cache: dict[str, dict] = {}
 _session: Optional[aiohttp.ClientSession] = None
 _lock = asyncio.Lock()
+_semaphore = asyncio.Semaphore(10)  # max 10 concurrent requests to PokeAPI
 
 
 async def _get_session() -> aiohttp.ClientSession:
@@ -52,7 +53,7 @@ async def fetch(endpoint: str) -> Optional[dict]:
 
     session = await _get_session()
     try:
-        async with session.get(url) as resp:
+        async with _semaphore, session.get(url) as resp:
             if resp.status == 404:
                 return None
             resp.raise_for_status()

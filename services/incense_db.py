@@ -46,6 +46,20 @@ async def init_db():
                 started_at    TEXT NOT NULL DEFAULT (datetime('now')),
                 PRIMARY KEY (guild_id, channel_id)
             );
+
+            CREATE TABLE IF NOT EXISTS audit_log (
+                id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                guild_id    TEXT    NOT NULL,
+                user_id     TEXT    NOT NULL,
+                action      TEXT    NOT NULL,
+                details     TEXT    NOT NULL DEFAULT '',
+                created_at  TEXT    NOT NULL DEFAULT (datetime('now'))
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_audit_guild
+                ON audit_log (guild_id, created_at DESC);
+            CREATE INDEX IF NOT EXISTS idx_audit_user
+                ON audit_log (guild_id, user_id, created_at DESC);
         """)
         await db.commit()
 
@@ -194,3 +208,79 @@ async def get_incense(guild_id: str, channel_id: str) -> Optional[dict]:
                 "paused":       bool(row[3]),
                 "started_at":   row[4],
             }
+
+
+async def remove_channel_and_incense(guild_id: str, channel_id: str) -> None:
+    """Remove a stale channel from both tables (channel deleted from Discord)."""
+    async with _write_lock:
+        async with aiosqlite.connect(DB_PATH) as db:
+            await db.execute(
+                "DELETE FROM incense_channels WHERE guild_id=? AND channel_id=?",
+                (guild_id, channel_id),
+            )
+            await db.execute(
+                "DELETE FROM active_incenses WHERE guild_id=? AND channel_id=?",
+                (guild_id, channel_id),
+            )
+            await db.commit()
+
+
+# ── Audit log ────────────────────────────────────────────────────────────────
+
+async def log_action(
+    guild_id: str, user_id: str, action: str, details: str = ""
+) -> None:
+    """Record an incense management action."""
+    async with _write_lock:
+        async with aiosqlite.connect(DB_PATH) as db:
+            await db.execute(
+                """INSERT INTO audit_log (guild_id, user_id, action, details)
+                   VALUES (?, ?, ?, ?)""",
+                (guild_id, user_id, action, details),
+            )
+            await db.commit()
+
+
+async def get_audit_log(
+    guild_id: str, limit: int = 20, user_id: Optional[str] = None
+) -> list[dict]:
+    """Get recent audit log entries."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        if user_id:
+            sql = """SELECT user_id, action, details, created_at
+                     FROM audit_log WHERE guild_id=? AND user_id=?
+                     ORDER BY created_at DESC LIMIT ?"""
+            params = (guild_id, user_id, limit)
+        else:
+            sql = """SELECT user_id, action, details, created_at
+                     FROM audit_log WHERE guild_id=?
+                     ORDER BY created_at DESC LIMIT ?"""
+            params = (guild_id, limit)
+        async with db.execute(sql, params) as cur:
+            rows = await cur.fetchall()
+            return [
+                {
+                    "user_id":    r[0],
+                    "action":     r[1],
+                    "details":    r[2],
+                    "created_at": r[3],
+                }
+                for r in rows
+            ]
+
+
+async def get_user_action_summary(guild_id: str) -> list[dict]:
+    """Get action counts per user for the guild."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        async with db.execute(
+            """SELECT user_id, COUNT(*) as total,
+                      MAX(created_at) as last_action
+               FROM audit_log WHERE guild_id=?
+               GROUP BY user_id ORDER BY total DESC""",
+            (guild_id,),
+        ) as cur:
+            rows = await cur.fetchall()
+            return [
+                {"user_id": r[0], "total": r[1], "last_action": r[2]}
+                for r in rows
+            ]

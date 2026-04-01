@@ -29,7 +29,6 @@ COGS = [
     "cogs.weakness",
     "cogs.typechart",
     "cogs.item",
-    "cogs.settings",
     "cogs.sprite",
     "cogs.events",
     # ── Incense Manager ───────────────────────────────────────────────────────
@@ -49,9 +48,10 @@ class QTsDex(commands.Bot):
 
     async def setup_hook(self):
         # ── Initialise databases ──────────────────────────────────────────────
-        from services import events_db, incense_db
+        from services import events_db, incense_db, guild_settings_db
         await events_db.init_db()
         await incense_db.init_db()
+        await guild_settings_db.init_db()
         log.info("✅ Databases initialised")
 
         # ── Load cogs ─────────────────────────────────────────────────────────

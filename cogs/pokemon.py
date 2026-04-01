@@ -22,11 +22,6 @@ from utils.user_prefs import get as get_pref, set_pref
 
 # Lazy import to avoid circular — moves cog helpers imported inline in _go_moves
 
-STYLE_LABELS = {
-    "numbers": "🔢 Numbers",
-    "bar":     "📊 Bar",
-}
-
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -128,7 +123,7 @@ def _battle_move_lines(moves: list[dict]) -> str:
 
 # ── Embed builders ────────────────────────────────────────────────────────────
 
-def build_info_embed(data: dict, style: str) -> discord.Embed:
+def build_info_embed(data: dict) -> discord.Embed:
     name  = data["name"].replace("-", " ").title()
     dex   = data["id"]
     types = [t["type"]["name"] for t in data["types"]]
@@ -146,17 +141,16 @@ def build_info_embed(data: dict, style: str) -> discord.Embed:
     embed.add_field(name="🔮 Abilities", value="\n".join(abilities), inline=True)
     embed.add_field(name="\u200b",       value="\u200b",             inline=True)
 
-    # Clean stat block — plain text, no code block wrestling
     embed.add_field(
         name="📈 Base Stats",
-        value=build_stat_lines(stats, total, style),
+        value=build_stat_lines(stats, total),
         inline=False,
     )
 
     sp = _sprite(data)
     if sp:
         embed.set_thumbnail(url=sp)
-    embed.set_footer(text=f"King's Dex  •  {STYLE_LABELS[style]}  •  powered by PokéAPI")
+    embed.set_footer(text=FOOTER)
     return embed
 
 
@@ -164,7 +158,6 @@ def build_battle_embed(
     data: dict,
     top_moves: list[dict],
     ability_effects: dict[str, str],
-    style: str,
 ) -> discord.Embed:
     name  = data["name"].replace("-", " ").title()
     types = [t["type"]["name"] for t in data["types"]]
@@ -185,7 +178,6 @@ def build_battle_embed(
     if sp:
         embed.set_thumbnail(url=sp)
 
-    # ── Weaknesses — full width, only non-empty ───────────────────────────────
     weakness_rows = [
         ("🔴 4×",   buckets["4x"]),
         ("🟠 2×",   buckets["2x"]),
@@ -205,10 +197,9 @@ def build_battle_embed(
             inline=False,
         )
 
-    # ── Stats ─────────────────────────────────────────────────────────────────
     embed.add_field(
         name="📈 Stats",
-        value=build_stat_lines(stats, total, style),
+        value=build_stat_lines(stats, total),
         inline=False,
     )
 
@@ -244,11 +235,10 @@ def build_battle_embed(
 # ── View ──────────────────────────────────────────────────────────────────────
 
 class PokemonView(discord.ui.View):
-    def __init__(self, data: dict, user_id: int, style: str, start_mode: str = "info"):
+    def __init__(self, data: dict, user_id: int, start_mode: str = "info"):
         super().__init__(timeout=180)
         self.data             = data
         self.user_id          = user_id
-        self.style            = style
         self.mode             = start_mode
         self.top_moves:       list[dict]     = []
         self.ability_effects: dict[str, str] = {}
@@ -257,65 +247,19 @@ class PokemonView(discord.ui.View):
     def _sync_buttons(self):
         self.clear_items()
         if self.mode == "info":
-            for key, label in STYLE_LABELS.items():
-                btn = discord.ui.Button(
-                    label=label,
-                    style=discord.ButtonStyle.success if key == self.style else discord.ButtonStyle.secondary,
-                    row=0,
-                )
-                btn.callback = self._make_style_cb(key)
-                self.add_item(btn)
-            b = discord.ui.Button(label="⚔️ Battle Card", style=discord.ButtonStyle.danger, row=1)
+            b = discord.ui.Button(label="⚔️ Battle Card", style=discord.ButtonStyle.danger, row=0)
             b.callback = self._go_battle
             self.add_item(b)
-            m = discord.ui.Button(label="📋 Moves", style=discord.ButtonStyle.secondary, row=1)
+            m = discord.ui.Button(label="📋 Moves", style=discord.ButtonStyle.secondary, row=0)
             m.callback = self._go_moves
             self.add_item(m)
         else:
-            # Battle card: style buttons + back button
-            for key, label in STYLE_LABELS.items():
-                btn = discord.ui.Button(
-                    label=label,
-                    style=discord.ButtonStyle.success if key == self.style else discord.ButtonStyle.secondary,
-                    row=0,
-                )
-                btn.callback = self._make_battle_style_cb(key)
-                self.add_item(btn)
-            b = discord.ui.Button(label="📋 Info", style=discord.ButtonStyle.primary, row=1)
+            b = discord.ui.Button(label="📋 Info", style=discord.ButtonStyle.primary, row=0)
             b.callback = self._go_info
             self.add_item(b)
 
     def _guard(self, interaction: discord.Interaction) -> bool:
         return interaction.user.id == self.user_id
-
-    def _make_style_cb(self, style: str):
-        async def cb(interaction: discord.Interaction):
-            if not self._guard(interaction):
-                return await interaction.response.send_message(
-                    "Only the person who ran this command can switch styles.", ephemeral=True
-                )
-            self.style = style
-            set_pref(self.user_id, "stat_style", style)
-            self._sync_buttons()
-            await interaction.response.edit_message(
-                embed=build_info_embed(self.data, self.style), view=self
-            )
-        return cb
-
-    def _make_battle_style_cb(self, style: str):
-        async def cb(interaction: discord.Interaction):
-            if not self._guard(interaction):
-                return await interaction.response.send_message(
-                    "Only the person who ran this command can switch styles.", ephemeral=True
-                )
-            self.style = style
-            set_pref(self.user_id, "stat_style", style)
-            self._sync_buttons()
-            await interaction.response.edit_message(
-                embed=build_battle_embed(self.data, self.top_moves, self.ability_effects, self.style),
-                view=self,
-            )
-        return cb
 
     async def _go_battle(self, interaction: discord.Interaction):
         if not self._guard(interaction):
@@ -332,7 +276,7 @@ class PokemonView(discord.ui.View):
         set_pref(self.user_id, "last_pokemon_mode", "battle")
         self._sync_buttons()
         await interaction.edit_original_response(
-            embed=build_battle_embed(self.data, self.top_moves, self.ability_effects, self.style),
+            embed=build_battle_embed(self.data, self.top_moves, self.ability_effects),
             view=self,
         )
 
@@ -371,7 +315,7 @@ class PokemonView(discord.ui.View):
         set_pref(self.user_id, "last_pokemon_mode", "info")
         self._sync_buttons()
         await interaction.response.edit_message(
-            embed=build_info_embed(self.data, self.style), view=self
+            embed=build_info_embed(self.data), view=self
         )
 
 
@@ -397,21 +341,17 @@ class PokemonCog(commands.Cog):
                 ephemeral=True,
             )
 
-        style = get_pref(interaction.user.id, "stat_style")
-        if style not in STYLE_LABELS:
-            style = "numbers"
         start_mode = get_pref(interaction.user.id, "last_pokemon_mode") or "info"
-
-        view = PokemonView(data=data, user_id=interaction.user.id, style=style, start_mode=start_mode)
+        view = PokemonView(data=data, user_id=interaction.user.id, start_mode=start_mode)
 
         if start_mode == "battle":
             view.top_moves, view.ability_effects = await asyncio.gather(
                 fetch_top_moves(data.get("moves", [])),
                 fetch_ability_effects(data.get("abilities", [])),
             )
-            embed = build_battle_embed(data, view.top_moves, view.ability_effects, style)
+            embed = build_battle_embed(data, view.top_moves, view.ability_effects)
         else:
-            embed = build_info_embed(data, style)
+            embed = build_info_embed(data)
 
         await interaction.followup.send(embed=embed, view=view)
 

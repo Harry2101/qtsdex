@@ -1,11 +1,13 @@
 """
 utils/user_prefs.py
-Lightweight JSON-backed per-user preferences.
+Lightweight JSON-backed per-user preferences with atomic writes.
 """
 
+import asyncio
 import json
 import logging
 import os
+import tempfile
 from typing import Any
 
 log = logging.getLogger("qtsdex.prefs")
@@ -13,12 +15,10 @@ log = logging.getLogger("qtsdex.prefs")
 _FILE   = "data/user_prefs.json"
 _cache: dict[str, dict] = {}
 _loaded = False
-
-VALID_STAT_STYLES = {"numbers", "bar"}
+_lock   = asyncio.Lock()
 
 DEFAULTS: dict[str, Any] = {
-    "stat_style":        "numbers",   # "numbers" | "bar"
-    "last_pokemon_mode": "info",      # "info"    | "battle"
+    "last_pokemon_mode": "info",      # "info" | "battle"
 }
 
 
@@ -37,21 +37,32 @@ def _load():
 
 
 def _save():
+    """Atomic write: write to temp file first, then rename."""
     try:
         os.makedirs("data", exist_ok=True)
-        with open(_FILE, "w") as f:
-            json.dump(_cache, f, indent=2)
+        fd, tmp_path = tempfile.mkstemp(dir="data", suffix=".json.tmp")
+        try:
+            with os.fdopen(fd, "w") as f:
+                json.dump(_cache, f, indent=2)
+            # On Windows, can't rename over existing file — remove first
+            if os.path.exists(_FILE):
+                os.replace(tmp_path, _FILE)
+            else:
+                os.rename(tmp_path, _FILE)
+        except Exception:
+            # Clean up temp file on failure
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
+            raise
     except Exception as e:
         log.error(f"Failed to save user prefs: {e}")
 
 
 def get(user_id: int, key: str) -> Any:
     _load()
-    val = _cache.get(str(user_id), {}).get(key, DEFAULTS.get(key))
-    # Sanitise stat_style — old "tiers" value gets reset to "numbers"
-    if key == "stat_style" and val not in VALID_STAT_STYLES:
-        return "numbers"
-    return val
+    return _cache.get(str(user_id), {}).get(key, DEFAULTS.get(key))
 
 
 def set_pref(user_id: int, key: str, value: Any):
