@@ -371,6 +371,10 @@ class ChecklistView(discord.ui.View):
         clear.callback = self._clear
         self.add_item(clear)
 
+        friends = discord.ui.Button(label="👥 Friends", style=discord.ButtonStyle.secondary, row=util_row)
+        friends.callback = self._friends
+        self.add_item(friends)
+
     def _guard(self, interaction: discord.Interaction) -> bool:
         return interaction.user.id == self.user.id
 
@@ -470,6 +474,401 @@ class ChecklistView(discord.ui.View):
             ),
             view=ClearConfirmView(parent=self),
         )
+
+    async def _friends(self, interaction: discord.Interaction):
+        if not self._guard(interaction):
+            return await interaction.response.send_message("This isn't your checklist.", ephemeral=True)
+        await interaction.response.defer()
+        friend_ids = await events_db.get_friends(str(self.user.id))
+        if not friend_ids:
+            embed = discord.Embed(
+                title="👥  Friends",
+                description=(
+                    "You don't have any friends added yet.\n\n"
+                    "Use `/checklist friend add @user` to send a friend request!"
+                ),
+                colour=0x5865F2,
+            )
+            embed.set_footer(text=make_footer(self.guild_id))
+            await interaction.edit_original_response(embed=embed, view=FriendsBackView(self))
+            return
+
+        view = FriendsListView(
+            owner=self,
+            friend_ids=friend_ids,
+            bot=interaction.client,
+            guild_id=self.guild_id,
+        )
+        await view.resolve_names(interaction)
+        await interaction.edit_original_response(embed=view._embed(), view=view)
+
+
+# ── Friends list view ────────────────────────────────────────────────────────
+
+class FriendsBackView(discord.ui.View):
+    """Minimal view with just a Back button to return to the user's checklist."""
+
+    def __init__(self, parent: ChecklistView):
+        super().__init__(timeout=300)
+        self.parent = parent
+
+    @discord.ui.button(label="◀ Back to My List", style=discord.ButtonStyle.primary)
+    async def back(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if interaction.user.id != self.parent.user.id:
+            return await interaction.response.send_message("This isn't your view.", ephemeral=True)
+        self.parent._build_buttons()
+        await interaction.response.edit_message(embed=self.parent._embed(), view=self.parent)
+
+
+class FriendsListView(discord.ui.View):
+    """Shows a select menu of friends whose checklists you can view."""
+
+    def __init__(
+        self,
+        owner:      ChecklistView,
+        friend_ids: list[str],
+        bot:        commands.Bot,
+        guild_id:   str,
+    ):
+        super().__init__(timeout=300)
+        self.owner      = owner
+        self.friend_ids = friend_ids[:25]
+        self.bot        = bot
+        self.guild_id   = guild_id
+        self.names: dict[str, str] = {}
+
+    async def resolve_names(self, interaction: discord.Interaction):
+        """Resolve user IDs to display names."""
+        for uid in self.friend_ids:
+            try:
+                user = self.bot.get_user(int(uid)) or await self.bot.fetch_user(int(uid))
+                self.names[uid] = user.display_name
+            except Exception:
+                self.names[uid] = f"User {uid}"
+        self._build()
+
+    def _build(self):
+        self.clear_items()
+        if self.friend_ids:
+            sel = discord.ui.Select(
+                placeholder="👥 View a friend's checklist…",
+                options=[
+                    discord.SelectOption(
+                        label=self.names.get(uid, f"User {uid}")[:100],
+                        value=uid,
+                    )
+                    for uid in self.friend_ids
+                ],
+                row=0,
+            )
+            sel.callback = self._select_friend
+            self.add_item(sel)
+
+        back = discord.ui.Button(label="◀ Back to My List", style=discord.ButtonStyle.primary, row=1)
+        back.callback = self._back
+        self.add_item(back)
+
+    def _embed(self) -> discord.Embed:
+        desc = "\n".join(
+            f"• **{self.names.get(uid, f'User {uid}')}**"
+            for uid in self.friend_ids
+        )
+        embed = discord.Embed(
+            title="👥  Friends",
+            description=f"Select a friend to view their checklist:\n\n{desc}",
+            colour=0x5865F2,
+        )
+        embed.set_footer(text=make_footer(self.guild_id))
+        return embed
+
+    async def _select_friend(self, interaction: discord.Interaction):
+        if interaction.user.id != self.owner.user.id:
+            return await interaction.response.send_message("This isn't your view.", ephemeral=True)
+        await interaction.response.defer()
+        friend_uid = interaction.data["values"][0]
+        try:
+            friend_user = self.bot.get_user(int(friend_uid)) or await self.bot.fetch_user(int(friend_uid))
+        except Exception:
+            return await interaction.edit_original_response(
+                embed=discord.Embed(title="❌ Could not find that user.", colour=0xED4245),
+                view=FriendsBackView(self.owner),
+            )
+        cl         = await events_db.ensure_checklist(GLOBAL_ID, self.owner.ctype)
+        targets    = await events_db.get_targets(cl["id"])
+        caught_ids = await events_db.get_user_catches(cl["id"], friend_uid)
+        view = FriendChecklistView(
+            parent=self.owner,
+            friend=friend_user,
+            checklist_id=cl["id"],
+            ctype=self.owner.ctype,
+            label=cl["label"],
+            targets=targets,
+            caught_ids=caught_ids,
+            guild_id=self.guild_id,
+        )
+        await interaction.edit_original_response(embed=view._embed(), view=view)
+
+    async def _back(self, interaction: discord.Interaction):
+        if interaction.user.id != self.owner.user.id:
+            return await interaction.response.send_message("This isn't your view.", ephemeral=True)
+        self.owner._build_buttons()
+        await interaction.response.edit_message(embed=self.owner._embed(), view=self.owner)
+
+
+# ── Friend's checklist (read-only) ──────────────────────────────────────────
+
+class FriendChecklistView(discord.ui.View):
+    """Read-only view of a friend's checklist progress."""
+
+    def __init__(
+        self,
+        parent:       ChecklistView,
+        friend:       discord.User | discord.Member,
+        checklist_id: int,
+        ctype:        str,
+        label:        str,
+        targets:      list[dict],
+        caught_ids:   set[int],
+        guild_id:     str,
+    ):
+        super().__init__(timeout=300)
+        self.parent       = parent
+        self.friend       = friend
+        self.checklist_id = checklist_id
+        self.ctype        = ctype
+        self.label        = label
+        self.targets      = targets
+        self.caught_ids   = caught_ids
+        self.sort         = "alpha"
+        self.page         = 0
+        self.total_pages  = 1
+        self.remaining_only = False
+        self.guild_id     = guild_id
+        self._build_buttons()
+
+    def _build_buttons(self):
+        self.clear_items()
+        # Row 0 — sort buttons
+        for key, lbl in SORT_LABELS.items():
+            btn = discord.ui.Button(
+                label=lbl,
+                style=discord.ButtonStyle.success if key == self.sort else discord.ButtonStyle.secondary,
+                row=0,
+            )
+            btn.callback = self._make_sort_cb(key)
+            self.add_item(btn)
+
+        # Pagination
+        sorted_targets = _sort_targets(self.targets, self.sort)
+        display = (
+            [t for t in sorted_targets if t["id"] not in self.caught_ids]
+            if self.remaining_only else sorted_targets
+        )
+        self.total_pages = max(1, (len(display) + PER_PAGE - 1) // PER_PAGE)
+        self.page = max(0, min(self.page, self.total_pages - 1))
+
+        if self.total_pages > 1:
+            prev_btn = discord.ui.Button(
+                label="◀ Prev", style=discord.ButtonStyle.secondary, row=1,
+                disabled=self.page <= 0,
+            )
+            prev_btn.callback = self._prev_page
+            self.add_item(prev_btn)
+
+            page_btn = discord.ui.Button(
+                label=f"{self.page + 1}/{self.total_pages}",
+                style=discord.ButtonStyle.secondary, row=1, disabled=True,
+            )
+            self.add_item(page_btn)
+
+            next_btn = discord.ui.Button(
+                label="Next ▶", style=discord.ButtonStyle.secondary, row=1,
+                disabled=self.page >= self.total_pages - 1,
+            )
+            next_btn.callback = self._next_page
+            self.add_item(next_btn)
+
+        # Utility row
+        util_row = 2 if self.total_pages > 1 else 1
+        toggle = discord.ui.Button(
+            label="👁️ Show All" if self.remaining_only else "👁️ Remaining",
+            style=discord.ButtonStyle.secondary, row=util_row,
+        )
+        toggle.callback = self._toggle_remaining
+        self.add_item(toggle)
+
+        other = "event" if self.ctype == "normal" else "normal"
+        switch_lbl = "✨ Event" if other == "event" else "🎯 Normal"
+        switch = discord.ui.Button(label=f"→ {switch_lbl}", style=discord.ButtonStyle.primary, row=util_row)
+        switch.callback = self._switch
+        self.add_item(switch)
+
+        back = discord.ui.Button(label="◀ Back to My List", style=discord.ButtonStyle.primary, row=util_row)
+        back.callback = self._back
+        self.add_item(back)
+
+    def _guard(self, interaction: discord.Interaction) -> bool:
+        return interaction.user.id == self.parent.user.id
+
+    def _embed(self) -> discord.Embed:
+        embed, self.total_pages = _checklist_embed(
+            self.ctype, self.label, self.targets, self.caught_ids,
+            self.friend, self.remaining_only, self.sort, self.page, self.guild_id,
+        )
+        embed.title = f"👥 {self.friend.display_name}'s {embed.title}"
+        return embed
+
+    async def _prev_page(self, interaction: discord.Interaction):
+        if not self._guard(interaction):
+            return await interaction.response.send_message("Not your view.", ephemeral=True)
+        self.page = max(0, self.page - 1)
+        self._build_buttons()
+        await interaction.response.edit_message(embed=self._embed(), view=self)
+
+    async def _next_page(self, interaction: discord.Interaction):
+        if not self._guard(interaction):
+            return await interaction.response.send_message("Not your view.", ephemeral=True)
+        self.page = min(self.total_pages - 1, self.page + 1)
+        self._build_buttons()
+        await interaction.response.edit_message(embed=self._embed(), view=self)
+
+    def _make_sort_cb(self, key: str):
+        async def cb(interaction: discord.Interaction):
+            if not self._guard(interaction):
+                return await interaction.response.send_message("Not your view.", ephemeral=True)
+            self.sort = key
+            self.page = 0
+            self._build_buttons()
+            await interaction.response.edit_message(embed=self._embed(), view=self)
+        return cb
+
+    async def _toggle_remaining(self, interaction: discord.Interaction):
+        if not self._guard(interaction):
+            return await interaction.response.send_message("Not your view.", ephemeral=True)
+        self.remaining_only = not self.remaining_only
+        self.page = 0
+        self._build_buttons()
+        await interaction.response.edit_message(embed=self._embed(), view=self)
+
+    async def _switch(self, interaction: discord.Interaction):
+        if not self._guard(interaction):
+            return await interaction.response.send_message("Not your view.", ephemeral=True)
+        await interaction.response.defer()
+        new_type   = "event" if self.ctype == "normal" else "normal"
+        cl         = await events_db.ensure_checklist(GLOBAL_ID, new_type)
+        targets    = await events_db.get_targets(cl["id"])
+        caught_ids = await events_db.get_user_catches(cl["id"], str(self.friend.id))
+        self.checklist_id = cl["id"]
+        self.ctype        = new_type
+        self.label        = cl["label"]
+        self.targets      = targets
+        self.caught_ids   = caught_ids
+        self.remaining_only = False
+        self.page         = 0
+        self._build_buttons()
+        await interaction.edit_original_response(embed=self._embed(), view=self)
+
+    async def _back(self, interaction: discord.Interaction):
+        if not self._guard(interaction):
+            return await interaction.response.send_message("Not your view.", ephemeral=True)
+        self.parent._build_buttons()
+        await interaction.response.edit_message(embed=self.parent._embed(), view=self.parent)
+
+
+# ── Friend request accept/decline view ──────────────────────────────────────
+
+class FriendRequestView(discord.ui.View):
+    """Inline accept/decline buttons for a friend request notification."""
+
+    def __init__(self, from_id: str, to_id: str):
+        super().__init__(timeout=None)
+        self.from_id = from_id
+        self.to_id   = to_id
+
+    @discord.ui.button(label="Accept", style=discord.ButtonStyle.success, emoji="✅", custom_id="fr_accept")
+    async def accept(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if str(interaction.user.id) != self.to_id:
+            return await interaction.response.send_message("This request isn't for you.", ephemeral=True)
+        ok = await events_db.accept_friend_request(self.from_id, self.to_id)
+        if ok:
+            self.stop()
+            await interaction.response.edit_message(
+                content=f"✅ You are now friends with <@{self.from_id}>!",
+                embed=None, view=None,
+            )
+        else:
+            await interaction.response.edit_message(
+                content="This request has already been handled.",
+                embed=None, view=None,
+            )
+
+    @discord.ui.button(label="Decline", style=discord.ButtonStyle.danger, emoji="✖️", custom_id="fr_decline")
+    async def decline(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if str(interaction.user.id) != self.to_id:
+            return await interaction.response.send_message("This request isn't for you.", ephemeral=True)
+        await events_db.decline_friend_request(self.from_id, self.to_id)
+        self.stop()
+        await interaction.response.edit_message(
+            content=f"Declined the friend request from <@{self.from_id}>.",
+            embed=None, view=None,
+        )
+
+
+# ── Friend requests management view ──────────────────────────────────────────
+
+class FriendRequestsView(discord.ui.View):
+    """Select menu to accept/decline incoming requests from /checklist friend requests."""
+
+    def __init__(self, user_id: str, incoming_ids: list[str], bot: commands.Bot):
+        super().__init__(timeout=120)
+        self.user_id      = user_id
+        self.incoming_ids = incoming_ids[:25]
+        self.bot          = bot
+        self.names: dict[str, str] = {}
+
+    async def resolve_names(self):
+        for uid in self.incoming_ids:
+            try:
+                u = self.bot.get_user(int(uid)) or await self.bot.fetch_user(int(uid))
+                self.names[uid] = u.display_name
+            except Exception:
+                self.names[uid] = f"User {uid}"
+        self._build()
+
+    def _build(self):
+        self.clear_items()
+        if self.incoming_ids:
+            sel = discord.ui.Select(
+                placeholder="✅ Accept a request…",
+                options=[
+                    discord.SelectOption(
+                        label=self.names.get(uid, f"User {uid}")[:100],
+                        value=uid, emoji="📥",
+                    )
+                    for uid in self.incoming_ids
+                ],
+                row=0,
+            )
+            sel.callback = self._accept
+            self.add_item(sel)
+
+    async def _accept(self, interaction: discord.Interaction):
+        if str(interaction.user.id) != self.user_id:
+            return await interaction.response.send_message("Not your view.", ephemeral=True)
+        from_id = interaction.data["values"][0]
+        ok = await events_db.accept_friend_request(from_id, self.user_id)
+        name = self.names.get(from_id, f"<@{from_id}>")
+        if ok:
+            self.incoming_ids.remove(from_id)
+            self._build()
+            await interaction.response.edit_message(
+                content=f"✅ You and **{name}** are now friends!",
+                view=self if self.incoming_ids else None,
+            )
+        else:
+            await interaction.response.send_message(
+                f"That request from **{name}** no longer exists.", ephemeral=True
+            )
 
 
 # ── Cog ───────────────────────────────────────────────────────────────────────
@@ -745,6 +1144,185 @@ class EventsCog(commands.Cog):
             remaining_only=True, guild_id=gid,
         )
         await interaction.followup.send(embed=view._embed(), view=view)
+
+    # ── /checklist friend ────────────────────────────────────────────────────
+
+    friend = app_commands.Group(
+        name="friend",
+        description="Manage checklist friends.",
+        parent=checklist,
+    )
+
+    @friend.command(name="add", description="Send a friend request so you can view each other's checklists.")
+    @app_commands.describe(user="The user to add as a friend")
+    async def fr_add(self, interaction: discord.Interaction, user: discord.User):
+        gid = str(interaction.guild_id or "")
+        me  = str(interaction.user.id)
+        them = str(user.id)
+
+        if user.bot:
+            return await interaction.response.send_message("You can't add bots as friends.", ephemeral=True)
+
+        result = await events_db.send_friend_request(me, them)
+
+        if result == "self":
+            desc = "You can't add yourself as a friend."
+        elif result == "already_friends":
+            desc = f"You and {user.mention} are already friends!"
+        elif result == "already_sent":
+            desc = f"You already have a pending request to {user.mention}."
+        elif result == "auto_accepted":
+            desc = f"✅ {user.mention} had already sent you a request — you're now friends!"
+        else:
+            desc = f"📨 Friend request sent to {user.mention}!"
+            # DM the target user about the request
+            try:
+                dm_embed = discord.Embed(
+                    title="👥 Friend Request",
+                    description=(
+                        f"**{interaction.user.display_name}** wants to be your checklist friend!\n\n"
+                        f"Use `/checklist friend requests` to accept or decline."
+                    ),
+                    colour=0x5865F2,
+                )
+                dm_embed.set_footer(text=make_footer(gid))
+                await user.send(embed=dm_embed)
+            except discord.Forbidden:
+                desc += "\n*(Couldn't DM them — they may have DMs disabled.)*"
+
+        embed = discord.Embed(
+            title="👥 Friends",
+            description=desc,
+            colour=0x5865F2,
+        )
+        embed.set_footer(text=make_footer(gid))
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+
+    @friend.command(name="remove", description="Remove a friend.")
+    @app_commands.describe(user="The friend to remove")
+    async def fr_remove(self, interaction: discord.Interaction, user: discord.User):
+        gid    = str(interaction.guild_id or "")
+        ok     = await events_db.remove_friend(str(interaction.user.id), str(user.id))
+        desc   = (
+            f"Removed {user.mention} from your friends list."
+            if ok else
+            f"{user.mention} wasn't on your friends list."
+        )
+        embed = discord.Embed(title="👥 Friends", description=desc, colour=0x5865F2)
+        embed.set_footer(text=make_footer(gid))
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+
+    @friend.command(name="list", description="See your friends list.")
+    async def fr_list(self, interaction: discord.Interaction):
+        gid        = str(interaction.guild_id or "")
+        friend_ids = await events_db.get_friends(str(interaction.user.id))
+
+        if not friend_ids:
+            embed = discord.Embed(
+                title="👥 Friends",
+                description="You don't have any friends yet.\nUse `/checklist friend add @user` to send a request!",
+                colour=0x5865F2,
+            )
+            embed.set_footer(text=make_footer(gid))
+            return await interaction.response.send_message(embed=embed, ephemeral=True)
+
+        lines = []
+        for uid in friend_ids[:25]:
+            try:
+                u = self.bot.get_user(int(uid)) or await self.bot.fetch_user(int(uid))
+                lines.append(f"• **{u.display_name}** ({u})")
+            except Exception:
+                lines.append(f"• <@{uid}>")
+
+        embed = discord.Embed(
+            title=f"👥 Friends ({len(friend_ids)})",
+            description="\n".join(lines),
+            colour=0x5865F2,
+        )
+        embed.set_footer(text=make_footer(gid))
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+
+    @friend.command(name="requests", description="View and manage incoming friend requests.")
+    async def fr_requests(self, interaction: discord.Interaction):
+        gid     = str(interaction.guild_id or "")
+        me      = str(interaction.user.id)
+        incoming = await events_db.get_incoming_requests(me)
+        outgoing = await events_db.get_outgoing_requests(me)
+
+        if not incoming and not outgoing:
+            embed = discord.Embed(
+                title="👥 Friend Requests",
+                description="No pending requests.",
+                colour=0x5865F2,
+            )
+            embed.set_footer(text=make_footer(gid))
+            return await interaction.response.send_message(embed=embed, ephemeral=True)
+
+        embed = discord.Embed(title="👥 Friend Requests", colour=0x5865F2)
+
+        if incoming:
+            lines = []
+            for uid in incoming[:15]:
+                try:
+                    u = self.bot.get_user(int(uid)) or await self.bot.fetch_user(int(uid))
+                    lines.append(f"• **{u.display_name}** ({u})")
+                except Exception:
+                    lines.append(f"• <@{uid}>")
+            embed.add_field(
+                name=f"📥 Incoming ({len(incoming)})",
+                value="\n".join(lines),
+                inline=False,
+            )
+
+        if outgoing:
+            lines = []
+            for uid in outgoing[:15]:
+                try:
+                    u = self.bot.get_user(int(uid)) or await self.bot.fetch_user(int(uid))
+                    lines.append(f"• **{u.display_name}** ({u})")
+                except Exception:
+                    lines.append(f"• <@{uid}>")
+            embed.add_field(
+                name=f"📤 Outgoing ({len(outgoing)})",
+                value="\n".join(lines),
+                inline=False,
+            )
+
+        embed.set_footer(text=make_footer(gid))
+
+        # Add accept/decline buttons for incoming requests
+        view = None
+        if incoming:
+            view = FriendRequestsView(me, incoming, self.bot)
+            await view.resolve_names()
+
+        await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
+
+    @friend.command(name="accept", description="Accept a friend request.")
+    @app_commands.describe(user="The user whose request to accept")
+    async def fr_accept(self, interaction: discord.Interaction, user: discord.User):
+        gid = str(interaction.guild_id or "")
+        ok  = await events_db.accept_friend_request(str(user.id), str(interaction.user.id))
+        if ok:
+            desc = f"✅ You and {user.mention} are now friends!"
+        else:
+            desc = f"No pending request from {user.mention}."
+        embed = discord.Embed(title="👥 Friends", description=desc, colour=0x5865F2)
+        embed.set_footer(text=make_footer(gid))
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+
+    @friend.command(name="decline", description="Decline a friend request.")
+    @app_commands.describe(user="The user whose request to decline")
+    async def fr_decline(self, interaction: discord.Interaction, user: discord.User):
+        gid = str(interaction.guild_id or "")
+        ok  = await events_db.decline_friend_request(str(user.id), str(interaction.user.id))
+        if ok:
+            desc = f"Declined the request from {user.mention}."
+        else:
+            desc = f"No pending request from {user.mention}."
+        embed = discord.Embed(title="👥 Friends", description=desc, colour=0x5865F2)
+        embed.set_footer(text=make_footer(gid))
+        await interaction.response.send_message(embed=embed, ephemeral=True)
 
 
 async def setup(bot: commands.Bot):

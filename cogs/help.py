@@ -80,7 +80,7 @@ class HelpCog(commands.Cog):
             name="✨ Shiny Hunt Checklists",
             value=(
                 "`/checklist view`  — Your checklist with live catch/uncatch dropdowns\n"
-                "   ↳ Buttons: sort A–Z · Dex # · Evo Group · Remaining · Switch list\n"
+                "   ↳ Buttons: sort A–Z · Dex # · Evo Group · Remaining · Switch list · 👥 Friends\n"
                 "`/checklist add <pokemon>`  — Add Pokémon (bulk CSV, `--evo` chains supported)\n"
                 "   ↳ Example: `/checklist add pokemon:charmander, bulbasaur`\n"
                 "   ↳ Evo chains: `/checklist add pokemon:--evo charmander, --evo bulbasaur`\n"
@@ -93,6 +93,36 @@ class HelpCog(commands.Cog):
             ),
             inline=False,
         )
+
+        # ── Friends ──────────────────────────────────────────────────────────
+        embed.add_field(
+            name="👥 Checklist Friends",
+            value=(
+                "`/checklist friend add @user`  — Send a friend request\n"
+                "`/checklist friend accept @user`  — Accept a request\n"
+                "`/checklist friend decline @user`  — Decline a request\n"
+                "`/checklist friend remove @user`  — Remove a friend\n"
+                "`/checklist friend list`  — See your friends\n"
+                "`/checklist friend requests`  — View pending requests\n"
+                "   ↳ Or use the 👥 Friends button on your checklist!"
+            ),
+            inline=False,
+        )
+
+        # ── Channel Management ────────────────────────────────────────────────
+        if interaction.user.guild_permissions.administrator or interaction.user.id == OWNER_ID:
+            embed.add_field(
+                name="🔧 Channel Management  *(admin only)*",
+                value=(
+                    "`/channel create count: prefix: start_number:`  — Bulk-create channels\n"
+                    "   ↳ e.g. `/channel create count:20 prefix:♡- start_number:30`\n"
+                    "   ↳ Optional: `category:` and `after:` for positioning\n"
+                    "`/channel delete channel:`  — Delete a single channel\n"
+                    "`/channel delete from_channel: to_channel:`  — Delete a range of channels\n"
+                    "   ↳ Both modes require confirmation before deletion"
+                ),
+                inline=False,
+            )
 
         # ── Incense Manager — shown to authorised users ──────────────────────
         if show_incense:
@@ -147,7 +177,7 @@ class HelpCog(commands.Cog):
         )
 
         embed.set_footer(text=make_footer(str(interaction.guild_id or "")))
-        await interaction.response.send_message(embed=embed, ephemeral=True)
+        await interaction.response.send_message(embed=embed, ephemeral=False)
 
 
 async def setup(bot: commands.Bot):

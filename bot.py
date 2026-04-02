@@ -33,6 +33,7 @@ COGS = [
     "cogs.events",
     # ── Incense Manager ───────────────────────────────────────────────────────
     "cogs.incense",
+    "cogs.channels",
     "cogs.changelog",
     "cogs.help",
 ]
