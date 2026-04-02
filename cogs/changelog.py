@@ -3,8 +3,10 @@ cogs/changelog.py  —  /changelog
 Post formatted changelogs to a configured channel.
 
 /changelog setup #channel  — Admin sets the target channel (stored per-server)
-/changelog post             — Bot owner posts a changelog to that channel
+/changelog post             — Bot owner opens a modal to write + post a changelog
 /changelog channel          — Show which channel is currently configured
+
+Uses a Discord Modal for the post so multi-line formatting is preserved properly.
 """
 
 import os
@@ -30,15 +32,21 @@ def _build_changelog_embed(
     guild_id: str = "",
 ) -> discord.Embed:
     """Build a richly formatted changelog embed."""
-    # Parse change lines — lines starting with - or • become bullet points
     lines = []
     for raw in changes.splitlines():
         stripped = raw.strip()
         if not stripped:
+            lines.append("")          # preserve intentional blank lines
             continue
         if stripped.startswith(("-", "•", "*")):
             stripped = stripped.lstrip("-•* ").strip()
         lines.append(f"• {stripped}")
+
+    # Trim leading/trailing blank lines
+    while lines and lines[0] == "":
+        lines.pop(0)
+    while lines and lines[-1] == "":
+        lines.pop()
 
     body = "\n".join(lines) if lines else changes.strip()
 
@@ -55,6 +63,53 @@ def _build_changelog_embed(
     embed.set_footer(text=make_footer(guild_id, f"v{version.lstrip('v')}"))
     return embed
 
+
+# ── Modal ─────────────────────────────────────────────────────────────────────
+
+class ChangelogModal(discord.ui.Modal, title="Post Changelog"):
+    version = discord.ui.TextInput(
+        label="Version",
+        placeholder="e.g. 2.0, 2025-06-01, June Update",
+        max_length=50,
+        style=discord.TextStyle.short,
+    )
+    changes = discord.ui.TextInput(
+        label="Changes",
+        placeholder="- Fixed something\n- Added something\n- Improved something",
+        style=discord.TextStyle.long,
+        max_length=3500,
+    )
+
+    def __init__(self, channel: discord.TextChannel, guild_id: str):
+        super().__init__()
+        self.target_channel = channel
+        self.guild_id       = guild_id
+
+    async def on_submit(self, interaction: discord.Interaction):
+        embed = _build_changelog_embed(
+            self.version.value,
+            self.changes.value,
+            interaction.user,
+            self.guild_id,
+        )
+        try:
+            await self.target_channel.send(embed=embed)
+        except discord.Forbidden:
+            return await interaction.response.send_message(
+                f"❌ I don't have permission to send messages in {self.target_channel.mention}.",
+                ephemeral=True,
+            )
+
+        confirm = discord.Embed(
+            title="✅ Changelog Posted",
+            description=f"Posted **v{self.version.value.lstrip('v')}** to {self.target_channel.mention}.",
+            colour=0x57F287,
+        )
+        confirm.set_footer(text=make_footer(self.guild_id))
+        await interaction.response.send_message(embed=confirm, ephemeral=True)
+
+
+# ── Cog ───────────────────────────────────────────────────────────────────────
 
 class ChangelogCog(commands.Cog):
     def __init__(self, bot: commands.Bot):
@@ -92,10 +147,10 @@ class ChangelogCog(commands.Cog):
 
     @changelog.command(name="channel", description="Show the current changelog channel.")
     async def cl_channel(self, interaction: discord.Interaction):
-        gid     = str(interaction.guild_id or "")
-        ch_id   = get_changelog_channel(gid)
+        gid   = str(interaction.guild_id or "")
+        ch_id = get_changelog_channel(gid)
         if ch_id:
-            ch = interaction.guild.get_channel(ch_id) if interaction.guild else None
+            ch   = interaction.guild.get_channel(ch_id) if interaction.guild else None
             desc = ch.mention if ch else f"<#{ch_id}> *(channel may have been deleted)*"
         else:
             desc = "*Not set. Use `/changelog setup` to configure one.*"
@@ -110,18 +165,8 @@ class ChangelogCog(commands.Cog):
 
     # ── /changelog post ───────────────────────────────────────────────────────
 
-    @changelog.command(name="post", description="Post a changelog to the configured channel.")
-    @app_commands.describe(
-        version="Version number or tag (e.g. 1.4, 2025-06-01)",
-        changes="What changed — use new lines or dashes for bullet points",
-    )
-    async def cl_post(
-        self,
-        interaction: discord.Interaction,
-        version:     str,
-        changes:     str,
-    ):
-        # Only the bot owner can post changelogs
+    @changelog.command(name="post", description="Open a form to write and post a changelog.")
+    async def cl_post(self, interaction: discord.Interaction):
         if interaction.user.id != OWNER_ID:
             return await interaction.response.send_message(
                 "🚫 Only the bot owner can post changelogs.", ephemeral=True
@@ -145,23 +190,7 @@ class ChangelogCog(commands.Cog):
                 ephemeral=True,
             )
 
-        embed = _build_changelog_embed(version, changes, interaction.user, gid)
-
-        try:
-            await channel.send(embed=embed)
-        except discord.Forbidden:
-            return await interaction.response.send_message(
-                f"❌ I don't have permission to send messages in {channel.mention}.",
-                ephemeral=True,
-            )
-
-        confirm = discord.Embed(
-            title="✅ Changelog Posted",
-            description=f"Posted **v{version.lstrip('v')}** to {channel.mention}.",
-            colour=0x57F287,
-        )
-        confirm.set_footer(text=make_footer(gid))
-        await interaction.response.send_message(embed=confirm, ephemeral=True)
+        await interaction.response.send_modal(ChangelogModal(channel, gid))
 
 
 async def setup(bot: commands.Bot):
