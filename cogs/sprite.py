@@ -10,7 +10,7 @@ from discord.ext import commands
 
 from utils import pokeapi
 from utils.autocomplete import pokemon_ac
-from utils.embeds import FOOTER, error_embed, type_colour, type_badges, TYPE_EMOJI
+from utils.embeds import FOOTER, error_embed, type_colour, type_badges, TYPE_EMOJI, make_footer
 from utils.normalizer import normalize
 
 
@@ -50,11 +50,12 @@ def _pick_sprite(sprites: dict, shiny: bool) -> str | None:
 
 
 class SpriteView(discord.ui.View):
-    def __init__(self, data: dict, shiny: bool, user_id: int):
+    def __init__(self, data: dict, shiny: bool, user_id: int, guild_id: str = ""):
         super().__init__(timeout=120)
-        self.data    = data
-        self.shiny   = shiny
-        self.user_id = user_id
+        self.data     = data
+        self.shiny    = shiny
+        self.user_id  = user_id
+        self.guild_id = guild_id
         self._sync()
 
     def _sync(self):
@@ -83,7 +84,7 @@ class SpriteView(discord.ui.View):
         return interaction.user.id == self.user_id
 
     def _build_embed(self) -> discord.Embed:
-        return build_sprite_embed(self.data, self.shiny)
+        return build_sprite_embed(self.data, self.shiny, self.guild_id)
 
     async def _go_normal(self, interaction: discord.Interaction):
         if not self._guard(interaction):
@@ -104,7 +105,7 @@ class SpriteView(discord.ui.View):
         await interaction.response.edit_message(embed=self._build_embed(), view=self)
 
 
-def build_sprite_embed(data: dict, shiny: bool) -> discord.Embed:
+def build_sprite_embed(data: dict, shiny: bool, guild_id: str = "") -> discord.Embed:
     name    = data["name"].replace("-", " ").title()
     dex     = data["id"]
     types   = [t["type"]["name"] for t in data["types"]]
@@ -126,7 +127,7 @@ def build_sprite_embed(data: dict, shiny: bool) -> discord.Embed:
     else:
         embed.description += "\n\n*No sprite available for this variant.*"
 
-    embed.set_footer(text=f"King's Dex  •  Click image to zoom  •  powered by PokéAPI")
+    embed.set_footer(text=make_footer(guild_id, "Click image to zoom  •  powered by PokéAPI"))
     return embed
 
 
@@ -158,25 +159,25 @@ class SpriteCog(commands.Cog):
                 ephemeral=True,
             )
 
+        gid     = str(interaction.guild_id or "")
         sprites = _get_sprites(data)
         url     = _pick_sprite(sprites, shiny)
 
         if not url and shiny:
-            # Gracefully fall back and tell the user
             fallback = _pick_sprite(sprites, shiny=False)
             if fallback:
                 return await interaction.followup.send(
                     content=f"⚠️ No shiny sprite found for **{pokemon.title()}** — showing normal instead.",
-                    embed=build_sprite_embed(data, shiny=False),
-                    view=SpriteView(data=data, shiny=False, user_id=interaction.user.id),
+                    embed=build_sprite_embed(data, shiny=False, guild_id=gid),
+                    view=SpriteView(data=data, shiny=False, user_id=interaction.user.id, guild_id=gid),
                 )
             return await interaction.followup.send(
                 embed=error_embed("No Sprite", f"No sprite found for **{pokemon.title()}**."),
                 ephemeral=True,
             )
 
-        embed = build_sprite_embed(data, shiny)
-        view  = SpriteView(data=data, shiny=shiny, user_id=interaction.user.id)
+        embed = build_sprite_embed(data, shiny, gid)
+        view  = SpriteView(data=data, shiny=shiny, user_id=interaction.user.id, guild_id=gid)
         await interaction.followup.send(embed=embed, view=view)
 
 

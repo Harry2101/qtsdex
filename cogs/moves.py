@@ -15,7 +15,7 @@ from utils import pokeapi
 from utils.autocomplete import pokemon_ac, learn_method_ac
 from utils.embeds import (
     FOOTER, error_embed, type_colour,
-    TYPE_EMOJI, TYPE_COLOURS, DAMAGE_CLASS_EMOJI,
+    TYPE_EMOJI, TYPE_COLOURS, DAMAGE_CLASS_EMOJI, make_footer,
 )
 from utils.normalizer import normalize
 
@@ -155,18 +155,19 @@ def _move_detail_embed(data: dict) -> discord.Embed:
     embed.add_field(name="🎯 Target",   value=target,                inline=True)
     if effect:
         embed.add_field(name="📖 Effect", value=effect[:500], inline=False)
-    embed.set_footer(text="King's Dex  •  Move Details  •  powered by PokéAPI")
+    embed.set_footer(text=FOOTER)  # guild_id unavailable in standalone helper; outer caller overrides if needed
     return embed
 
 
 # ── View ──────────────────────────────────────────────────────────────────────
 
 class MovesView(discord.ui.View):
-    def __init__(self, raw_moves: list[tuple[str, str, int]], title: str, colour: int):
+    def __init__(self, raw_moves: list[tuple[str, str, int]], title: str, colour: int, guild_id: str = ""):
         super().__init__(timeout=180)
-        self.raw_moves = raw_moves
-        self.base_title = title
+        self.raw_moves   = raw_moves
+        self.base_title  = title
         self.base_colour = colour
+        self.guild_id    = guild_id
         self.current     = 0
 
         # Populated by ensure_fetched()
@@ -263,10 +264,10 @@ class MovesView(discord.ui.View):
         content = self._pages[self.current] if self._pages else "*No moves.*"
 
         e = discord.Embed(title=title, description=content, colour=colour)
-        e.set_footer(
-            text=f"King's Dex  •  Page {self.current+1}/{len(self._pages)}  •  {total} moves"
-                 + (f"  •  {active.title()} only" if active else "")
-        )
+        page_info = f"Page {self.current+1}/{len(self._pages)}  •  {total} moves"
+        if active:
+            page_info += f"  •  {active.title()} only"
+        e.set_footer(text=make_footer(self.guild_id, page_info))
         return e
 
     # ── Buttons ───────────────────────────────────────────────────────────────
@@ -434,8 +435,9 @@ class MovesCog(commands.Cog):
                 ephemeral=True,
             )
 
+        gid        = str(interaction.guild_id or "")
         method_tag = f" — {learn_method.replace('-', ' ').title()}" if learn_method else ""
-        view       = MovesView(raw_moves=raw, title=f"{name} — Moves{method_tag}", colour=colour)
+        view       = MovesView(raw_moves=raw, title=f"{name} — Moves{method_tag}", colour=colour, guild_id=gid)
 
         await view.ensure_fetched()
         view._sync_buttons()

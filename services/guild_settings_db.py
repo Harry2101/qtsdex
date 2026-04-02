@@ -17,6 +17,9 @@ _write_lock = asyncio.Lock()
 # In-memory cache: guild_id -> {key: value}
 _cache: dict[str, dict[str, str]] = {}
 
+_DEFAULT_NAME = "King's Dex"
+_QT_GUILD_ID  = "1477887017034584248"
+
 
 async def init_db():
     os.makedirs("data", exist_ok=True)
@@ -31,6 +34,13 @@ async def init_db():
                 PRIMARY KEY (guild_id, key)
             );
         """)
+        await db.commit()
+        # Pre-seed QT guild name if not already set
+        await db.execute(
+            """INSERT OR IGNORE INTO guild_settings (guild_id, key, value)
+               VALUES (?, 'bot_name', "QT's Dex")""",
+            (_QT_GUILD_ID,),
+        )
         await db.commit()
         # Pre-load cache
         async with db.execute("SELECT guild_id, key, value FROM guild_settings") as cur:
@@ -113,3 +123,34 @@ async def get_opdex_bot_id(guild_id: str) -> Optional[int]:
 async def set_opdex_bot_id(guild_id: str, bot_id: int) -> None:
     """Set the Operation Dex bot ID for a guild."""
     await set_val(guild_id, "opdex_bot_id", str(bot_id))
+
+
+# ── Bot branding (synchronous — uses in-memory cache) ─────────────────────────
+
+def get_bot_name(guild_id: str) -> str:
+    """Return the bot's display name for this guild. Always instant (cached)."""
+    return _cache.get(guild_id, {}).get("bot_name", _DEFAULT_NAME)
+
+
+def make_footer(guild_id: str = "", suffix: str = "powered by PokéAPI") -> str:
+    """Build a branded embed footer string for the given guild."""
+    name = get_bot_name(guild_id) if guild_id else _DEFAULT_NAME
+    return f"{name}  •  {suffix}"
+
+
+async def set_bot_name(guild_id: str, name: str) -> None:
+    """Set a custom bot display name for a guild."""
+    await set_val(guild_id, "bot_name", name)
+
+
+# ── Changelog channel ─────────────────────────────────────────────────────────
+
+def get_changelog_channel(guild_id: str) -> Optional[int]:
+    """Return the changelog channel ID for a guild (sync, cached)."""
+    val = _cache.get(guild_id, {}).get("changelog_channel")
+    return int(val) if val else None
+
+
+async def set_changelog_channel(guild_id: str, channel_id: int) -> None:
+    """Set the changelog channel for a guild."""
+    await set_val(guild_id, "changelog_channel", str(channel_id))

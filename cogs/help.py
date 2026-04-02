@@ -11,9 +11,9 @@ from discord import app_commands
 from discord.ext import commands
 
 from services import guild_settings_db
+from services.guild_settings_db import make_footer
 
 OWNER_ID = int(os.getenv("OWNER_ID", "145065060568530944"))
-FOOTER   = "King's Dex  •  powered by PokéAPI"
 
 
 async def _can_see_incense(interaction: discord.Interaction) -> bool:
@@ -123,6 +123,17 @@ class HelpCog(commands.Cog):
                 inline=False,
             )
 
+        # ── Changelog ─────────────────────────────────────────────────────────
+        embed.add_field(
+            name="📋 Changelog",
+            value=(
+                "`/changelog channel`  — See where changelogs are posted\n"
+                "`/changelog setup #channel`  — Set the changelog channel *(admin)*\n"
+                "`/changelog post version: changes:`  — Post a new changelog *(bot owner)*"
+            ),
+            inline=False,
+        )
+
         # ── Tips ──────────────────────────────────────────────────────────────
         embed.add_field(
             name="💡 Tips",
@@ -135,7 +146,7 @@ class HelpCog(commands.Cog):
             inline=False,
         )
 
-        embed.set_footer(text=FOOTER)
+        embed.set_footer(text=make_footer(str(interaction.guild_id or "")))
         await interaction.response.send_message(embed=embed, ephemeral=True)
 
 

@@ -16,7 +16,7 @@ from discord.ext import commands
 from services import events_db
 from utils import pokeapi
 from utils.autocomplete import pokemon_ac
-from utils.embeds import FOOTER, error_embed, type_colour
+from utils.embeds import FOOTER, error_embed, type_colour, make_footer
 from utils.normalizer import normalize
 
 # Global guild ID — all servers share the same checklists
@@ -142,6 +142,7 @@ def _checklist_embed(
     remaining_only: bool = False,
     sort:           str  = "alpha",
     page:           int  = 0,
+    guild_id:       str  = "",
 ) -> tuple[discord.Embed, int]:
     """Returns (embed, total_pages)."""
     total     = len(targets)
@@ -159,7 +160,7 @@ def _checklist_embed(
     if total == 0:
         embed.description = "*Empty list.*\nAdd Pokémon with `/checklist add`."
         embed.set_footer(
-            text=f"King's Dex  •  {user.display_name}  •  {sort_label}  •  powered by PokéAPI"
+            text=make_footer(guild_id, f"{user.display_name}  •  {sort_label}  •  powered by PokéAPI")
         )
         return embed, 1
 
@@ -207,7 +208,7 @@ def _checklist_embed(
 
     page_str = f"  •  Page {page + 1}/{total_pages}" if total_pages > 1 else ""
     embed.set_footer(
-        text=f"King's Dex  •  {user.display_name}  •  {sort_label}{page_str}  •  powered by PokéAPI"
+        text=make_footer(guild_id, f"{user.display_name}  •  {sort_label}{page_str}  •  powered by PokéAPI")
     )
     return embed, total_pages
 
@@ -253,6 +254,7 @@ class ChecklistView(discord.ui.View):
         user:           discord.User | discord.Member,
         remaining_only: bool = False,
         sort:           str  = "alpha",
+        guild_id:       str  = "",
     ):
         super().__init__(timeout=300)
         self.checklist_id   = checklist_id
@@ -265,6 +267,7 @@ class ChecklistView(discord.ui.View):
         self.sort           = sort
         self.page           = 0
         self.total_pages    = 1
+        self.guild_id       = guild_id
         self._build_buttons()
 
     def _build_buttons(self):
@@ -374,7 +377,7 @@ class ChecklistView(discord.ui.View):
     def _embed(self) -> discord.Embed:
         embed, self.total_pages = _checklist_embed(
             self.ctype, self.label, self.targets, self.caught_ids,
-            self.user, self.remaining_only, self.sort, self.page,
+            self.user, self.remaining_only, self.sort, self.page, self.guild_id,
         )
         return embed
 
@@ -635,7 +638,7 @@ class EventsCog(commands.Cog):
             display = ", ".join(not_on_list[:15])
             embed.add_field(name=f"Not on list ({len(not_on_list)})", value=display, inline=False)
 
-        embed.set_footer(text=f"King's Dex  •  {total_now} Pokémon remaining  •  powered by PokéAPI")
+        embed.set_footer(text=make_footer(str(interaction.guild_id or ""), f"{total_now} Pokémon remaining  •  powered by PokéAPI"))
         await interaction.followup.send(embed=embed)
 
     # /checklist view ─────────────────────────────────────────────────────────
@@ -649,12 +652,13 @@ class EventsCog(commands.Cog):
         list_type:   str = "normal",
     ):
         await interaction.response.defer(thinking=True)
+        gid        = str(interaction.guild_id or "")
         cl         = await events_db.ensure_checklist(GLOBAL_ID, list_type)
         targets    = await events_db.get_targets(cl["id"])
         caught_ids = await events_db.get_user_catches(cl["id"], str(interaction.user.id))
         view       = ChecklistView(
             checklist_id=cl["id"], ctype=list_type, label=cl["label"],
-            targets=targets, caught_ids=caught_ids, user=interaction.user,
+            targets=targets, caught_ids=caught_ids, user=interaction.user, guild_id=gid,
         )
         await interaction.followup.send(embed=view._embed(), view=view)
 
@@ -679,12 +683,13 @@ class EventsCog(commands.Cog):
                     f"**{pokemon.replace('-',' ').title()}** isn't on this checklist."),
                 ephemeral=True,
             )
+        gid = str(interaction.guild_id or "")
         await events_db.mark_caught(cl["id"], target["id"], str(interaction.user.id))
         targets    = await events_db.get_targets(cl["id"])
         caught_ids = await events_db.get_user_catches(cl["id"], str(interaction.user.id))
         view       = ChecklistView(
             checklist_id=cl["id"], ctype=list_type, label=cl["label"],
-            targets=targets, caught_ids=caught_ids, user=interaction.user,
+            targets=targets, caught_ids=caught_ids, user=interaction.user, guild_id=gid,
         )
         await interaction.followup.send(embed=view._embed(), view=view)
 
@@ -709,12 +714,13 @@ class EventsCog(commands.Cog):
                     f"**{pokemon.replace('-',' ').title()}** isn't on this checklist."),
                 ephemeral=True,
             )
+        gid = str(interaction.guild_id or "")
         await events_db.unmark_caught(cl["id"], target["id"], str(interaction.user.id))
         targets    = await events_db.get_targets(cl["id"])
         caught_ids = await events_db.get_user_catches(cl["id"], str(interaction.user.id))
         view       = ChecklistView(
             checklist_id=cl["id"], ctype=list_type, label=cl["label"],
-            targets=targets, caught_ids=caught_ids, user=interaction.user,
+            targets=targets, caught_ids=caught_ids, user=interaction.user, guild_id=gid,
         )
         await interaction.followup.send(embed=view._embed(), view=view)
 
@@ -729,13 +735,14 @@ class EventsCog(commands.Cog):
         list_type:   str = "normal",
     ):
         await interaction.response.defer(thinking=True)
+        gid        = str(interaction.guild_id or "")
         cl         = await events_db.ensure_checklist(GLOBAL_ID, list_type)
         targets    = await events_db.get_targets(cl["id"])
         caught_ids = await events_db.get_user_catches(cl["id"], str(interaction.user.id))
         view       = ChecklistView(
             checklist_id=cl["id"], ctype=list_type, label=cl["label"],
             targets=targets, caught_ids=caught_ids, user=interaction.user,
-            remaining_only=True,
+            remaining_only=True, guild_id=gid,
         )
         await interaction.followup.send(embed=view._embed(), view=view)
 

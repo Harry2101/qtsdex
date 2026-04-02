@@ -37,6 +37,7 @@ from discord import app_commands
 from discord.ext import commands
 
 from services import incense_db, guild_settings_db
+from services.guild_settings_db import make_footer
 
 log = logging.getLogger("qtsdex.incense")
 
@@ -111,7 +112,7 @@ def _is_channel_locked(channel: discord.TextChannel, opdex_id: int) -> bool:
 
 # ── Embed helpers ─────────────────────────────────────────────────────────────
 
-def _pause_embed(locked, already, failed, cleaned) -> discord.Embed:
+def _pause_embed(locked, already, failed, cleaned, guild_id: str = "") -> discord.Embed:
     colour = 0xED4245 if failed else (0xFEE75C if already else 0xFF6B35)
     embed  = discord.Embed(title="⏸️  Mass Incense Paused", colour=colour)
     embed.description = (
@@ -143,11 +144,11 @@ def _pause_embed(locked, already, failed, cleaned) -> discord.Embed:
             value=f"{len(cleaned)} deleted channel(s) removed from database.",
             inline=False,
         )
-    embed.set_footer(text="King's Dex  •  Incense Manager")
+    embed.set_footer(text=make_footer(guild_id, "Incense Manager"))
     return embed
 
 
-def _resume_embed(unlocked, already, failed, cleaned) -> discord.Embed:
+def _resume_embed(unlocked, already, failed, cleaned, guild_id: str = "") -> discord.Embed:
     colour = 0xED4245 if failed else 0x57F287
     embed  = discord.Embed(title="▶️  Mass Incense Resumed", colour=colour)
     embed.description = (
@@ -179,7 +180,7 @@ def _resume_embed(unlocked, already, failed, cleaned) -> discord.Embed:
             value=f"{len(cleaned)} deleted channel(s) removed from database.",
             inline=False,
         )
-    embed.set_footer(text="King's Dex  •  Incense Manager")
+    embed.set_footer(text=make_footer(guild_id, "Incense Manager"))
     return embed
 
 
@@ -462,9 +463,10 @@ class IncenseCog(commands.Cog):
             return await interaction.response.send_message(
                 "🚫 Only server administrators can configure the incense manager role.", ephemeral=True
             )
-        await guild_settings_db.set_incense_role(str(interaction.guild_id), role.id)
+        gid = str(interaction.guild_id or "")
+        await guild_settings_db.set_incense_role(gid, role.id)
         await incense_db.log_action(
-            str(interaction.guild_id), str(interaction.user.id), "setup_role",
+            gid, str(interaction.user.id), "setup_role",
             f"Set incense manager role to {role.name} ({role.id})"
         )
         embed = discord.Embed(
@@ -475,7 +477,7 @@ class IncenseCog(commands.Cog):
             ),
             colour=0x57F287,
         )
-        embed.set_footer(text="King's Dex  •  Incense Manager")
+        embed.set_footer(text=make_footer(gid, "Incense Manager"))
         await interaction.response.send_message(embed=embed)
 
     @setup_group.command(name="bot", description="Set which bot is the Operation Dex bot for auto-detection.")
@@ -490,9 +492,10 @@ class IncenseCog(commands.Cog):
         except ValueError:
             return await interaction.response.send_message("❌ Invalid bot ID.", ephemeral=True)
 
-        await guild_settings_db.set_opdex_bot_id(str(interaction.guild_id), bid)
+        gid = str(interaction.guild_id or "")
+        await guild_settings_db.set_opdex_bot_id(gid, bid)
         await incense_db.log_action(
-            str(interaction.guild_id), str(interaction.user.id), "setup_bot",
+            gid, str(interaction.user.id), "setup_bot",
             f"Set Operation Dex bot ID to {bid}"
         )
         embed = discord.Embed(
@@ -503,7 +506,7 @@ class IncenseCog(commands.Cog):
             ),
             colour=0x57F287,
         )
-        embed.set_footer(text="King's Dex  •  Incense Manager")
+        embed.set_footer(text=make_footer(gid, "Incense Manager"))
         await interaction.response.send_message(embed=embed)
 
     @setup_group.command(name="view", description="View the current incense configuration for this server.")
@@ -524,7 +527,7 @@ class IncenseCog(commands.Cog):
         embed.add_field(name="🎭 Manager Role", value=role_str, inline=False)
         embed.add_field(name="🤖 Operation Dex Bot", value=f"`{opdex_id}`", inline=True)
         embed.add_field(name="📍 Registered Channels", value=str(num_channels), inline=True)
-        embed.set_footer(text="King's Dex  •  Incense Manager")
+        embed.set_footer(text=make_footer(str(interaction.guild_id or ""), "Incense Manager"))
         await interaction.response.send_message(embed=embed, ephemeral=True)
 
     # ── /incense add ─────────────────────────────────────────────────────────
@@ -576,7 +579,7 @@ class IncenseCog(commands.Cog):
                 value="\n".join(ch.mention for ch in already),
                 inline=False,
             )
-        embed.set_footer(text="King's Dex  •  Incense Manager")
+        embed.set_footer(text=make_footer(guild_id, "Incense Manager"))
 
         if added:
             await incense_db.log_action(
@@ -646,7 +649,7 @@ class IncenseCog(commands.Cog):
                 description=f"{ch.mention} has been locked. Pokémon cannot spawn here.",
                 colour=0xFF6B35,
             )
-            embed.set_footer(text="King's Dex  •  Incense Manager")
+            embed.set_footer(text=make_footer(guild_id, "Incense Manager"))
             await interaction.followup.send(embed=embed)
         else:
             await interaction.followup.send(
@@ -692,7 +695,7 @@ class IncenseCog(commands.Cog):
                 description=f"{ch.mention} is now live. Pokémon will start spawning! 🎉",
                 colour=0x57F287,
             )
-            embed.set_footer(text="King's Dex  •  Incense Manager")
+            embed.set_footer(text=make_footer(guild_id, "Incense Manager"))
             await interaction.followup.send(embed=embed)
             try:
                 await ch.send("▶️ **Incense Resumed!** Pokémon will start spawning. Good luck! 🎉")
@@ -800,7 +803,7 @@ class IncenseCog(commands.Cog):
             if len(already) > 10:
                 preview += f" *+{len(already)-10} more*"
             embed.add_field(name=f"⏭️ Already registered ({len(already)})", value=preview, inline=False)
-        embed.set_footer(text="King's Dex  •  Incense Manager")
+        embed.set_footer(text=make_footer(guild_id, "Incense Manager"))
 
         if added:
             await incense_db.log_action(
@@ -874,7 +877,7 @@ class IncenseCog(commands.Cog):
                 value="\n".join(idle[:15]) + (f"\n*+{len(idle)-15} more*" if len(idle) > 15 else ""),
                 inline=False,
             )
-        embed.set_footer(text="King's Dex  •  Incense Manager")
+        embed.set_footer(text=make_footer(guild_id, "Incense Manager"))
         await interaction.followup.send(embed=embed)
 
     # ── /incense clear ───────────────────────────────────────────────────────
@@ -990,7 +993,7 @@ class IncenseCog(commands.Cog):
                     inline=False,
                 )
 
-        embed.set_footer(text="King's Dex  •  Incense Manager  •  Admin only")
+        embed.set_footer(text=make_footer(guild_id, "Incense Manager  •  Admin only"))
         await interaction.followup.send(embed=embed, ephemeral=True)
 
 

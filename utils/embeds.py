@@ -4,8 +4,9 @@ Shared embed helpers, colours, emoji, and stat rendering.
 """
 
 import discord
+from services.guild_settings_db import make_footer
 
-FOOTER = "King's Dex • powered by PokéAPI"
+FOOTER = "King's Dex  •  powered by PokéAPI"  # fallback constant — use make_footer(guild_id) when guild is known
 
 TYPE_COLOURS: dict[str, int] = {
     "normal":   0xA8A77A, "fire":     0xEE8130, "water":    0x6390F0,
@@ -66,14 +67,14 @@ def type_badge(t: str) -> str:
 def type_badges(types: list[str]) -> str:
     return "  ".join(type_badge(t) for t in types)
 
-def error_embed(title: str, desc: str) -> discord.Embed:
+def error_embed(title: str, desc: str, guild_id: str = "") -> discord.Embed:
     e = discord.Embed(title=f"❌  {title}", description=desc, colour=0xED4245)
-    e.set_footer(text=FOOTER)
+    e.set_footer(text=make_footer(guild_id))
     return e
 
-def base_embed(title: str, desc: str = "", colour: int = 0x5865F2) -> discord.Embed:
+def base_embed(title: str, desc: str = "", colour: int = 0x5865F2, guild_id: str = "") -> discord.Embed:
     e = discord.Embed(title=title, description=desc, colour=colour)
-    e.set_footer(text=FOOTER)
+    e.set_footer(text=make_footer(guild_id))
     return e
 
 

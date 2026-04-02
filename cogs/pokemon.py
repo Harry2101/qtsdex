@@ -14,7 +14,7 @@ from utils import pokeapi
 from utils.autocomplete import pokemon_ac
 from utils.embeds import (
     FOOTER, error_embed, type_badges, type_colour,
-    build_stat_lines, TYPE_EMOJI, DAMAGE_CLASS_EMOJI,
+    build_stat_lines, TYPE_EMOJI, DAMAGE_CLASS_EMOJI, make_footer,
 )
 from utils.normalizer import normalize
 from utils.type_chart import group_by_multiplier
@@ -123,7 +123,7 @@ def _battle_move_lines(moves: list[dict]) -> str:
 
 # ── Embed builders ────────────────────────────────────────────────────────────
 
-def build_info_embed(data: dict) -> discord.Embed:
+def build_info_embed(data: dict, guild_id: str = "") -> discord.Embed:
     name  = data["name"].replace("-", " ").title()
     dex   = data["id"]
     types = [t["type"]["name"] for t in data["types"]]
@@ -150,7 +150,7 @@ def build_info_embed(data: dict) -> discord.Embed:
     sp = _sprite(data)
     if sp:
         embed.set_thumbnail(url=sp)
-    embed.set_footer(text=FOOTER)
+    embed.set_footer(text=make_footer(guild_id))
     return embed
 
 
@@ -158,6 +158,7 @@ def build_battle_embed(
     data: dict,
     top_moves: list[dict],
     ability_effects: dict[str, str],
+    guild_id: str = "",
 ) -> discord.Embed:
     name  = data["name"].replace("-", " ").title()
     types = [t["type"]["name"] for t in data["types"]]
@@ -228,17 +229,18 @@ def build_battle_embed(
         inline=False,
     )
 
-    embed.set_footer(text="King's Dex  •  Battle Card  •  powered by PokéAPI")
+    embed.set_footer(text=make_footer(guild_id, "Battle Card  •  powered by PokéAPI"))
     return embed
 
 
 # ── View ──────────────────────────────────────────────────────────────────────
 
 class PokemonView(discord.ui.View):
-    def __init__(self, data: dict, user_id: int, start_mode: str = "info"):
+    def __init__(self, data: dict, user_id: int, guild_id: str = "", start_mode: str = "info"):
         super().__init__(timeout=180)
         self.data             = data
         self.user_id          = user_id
+        self.guild_id         = guild_id
         self.mode             = start_mode
         self.top_moves:       list[dict]     = []
         self.ability_effects: dict[str, str] = {}
@@ -276,7 +278,7 @@ class PokemonView(discord.ui.View):
         set_pref(self.user_id, "last_pokemon_mode", "battle")
         self._sync_buttons()
         await interaction.edit_original_response(
-            embed=build_battle_embed(self.data, self.top_moves, self.ability_effects),
+            embed=build_battle_embed(self.data, self.top_moves, self.ability_effects, self.guild_id),
             view=self,
         )
 
@@ -301,7 +303,7 @@ class PokemonView(discord.ui.View):
                 ephemeral=True,
             )
 
-        view = MovesView(raw_moves=raw, title=f"{name} — Moves", colour=colour)
+        view = MovesView(raw_moves=raw, title=f"{name} — Moves", colour=colour, guild_id=self.guild_id)
         await view.ensure_fetched()
         view._sync_buttons()
         await interaction.followup.send(embed=view.embed(), view=view)
@@ -315,7 +317,7 @@ class PokemonView(discord.ui.View):
         set_pref(self.user_id, "last_pokemon_mode", "info")
         self._sync_buttons()
         await interaction.response.edit_message(
-            embed=build_info_embed(self.data), view=self
+            embed=build_info_embed(self.data, self.guild_id), view=self
         )
 
 
@@ -341,17 +343,18 @@ class PokemonCog(commands.Cog):
                 ephemeral=True,
             )
 
+        gid        = str(interaction.guild_id or "")
         start_mode = get_pref(interaction.user.id, "last_pokemon_mode") or "info"
-        view = PokemonView(data=data, user_id=interaction.user.id, start_mode=start_mode)
+        view = PokemonView(data=data, user_id=interaction.user.id, guild_id=gid, start_mode=start_mode)
 
         if start_mode == "battle":
             view.top_moves, view.ability_effects = await asyncio.gather(
                 fetch_top_moves(data.get("moves", [])),
                 fetch_ability_effects(data.get("abilities", [])),
             )
-            embed = build_battle_embed(data, view.top_moves, view.ability_effects)
+            embed = build_battle_embed(data, view.top_moves, view.ability_effects, gid)
         else:
-            embed = build_info_embed(data)
+            embed = build_info_embed(data, gid)
 
         await interaction.followup.send(embed=embed, view=view)
 
