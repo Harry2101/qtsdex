@@ -782,11 +782,6 @@ class IncenseCog(commands.Cog):
         if len(unique) > 25:
             preview += f" *+{len(unique) - 25} more*"
 
-        for i in range(0, len(channels), 10):
-            await asyncio.gather(*[register(ch) for ch in channels[i:i + 10]])
-            if i + 10 < len(channels):
-                await asyncio.sleep(1)
-
         embed = discord.Embed(
             title="⚠️  Confirm Incense Channel Registration",
             description=(
