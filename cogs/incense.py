@@ -532,60 +532,157 @@ class IncenseCog(commands.Cog):
 
     # ── /incense add ─────────────────────────────────────────────────────────
 
-    @incense.command(name="add", description="Register one or more channels as incense channels.")
+    @incense.command(
+        name="add",
+        description="Register up to 5 channels and/or one or more full categories as incense channels.",
+    )
     @app_commands.describe(
-        channel="A channel to register",
+        channel="A channel to register (optional)",
         channel2="Another channel (optional)",
         channel3="Another channel (optional)",
         channel4="Another channel (optional)",
         channel5="Another channel (optional)",
+        category1="A category whose text channels should all be registered (optional)",
+        category2="Another category to fully register (optional)",
+        category3="Another category to fully register (optional)",
     )
     async def inc_add(
         self,
         interaction: discord.Interaction,
-        channel:  discord.TextChannel,
+        channel: Optional[discord.TextChannel] = None,
         channel2: Optional[discord.TextChannel] = None,
         channel3: Optional[discord.TextChannel] = None,
         channel4: Optional[discord.TextChannel] = None,
         channel5: Optional[discord.TextChannel] = None,
+        category1: Optional[discord.CategoryChannel] = None,
+        category2: Optional[discord.CategoryChannel] = None,
+        category3: Optional[discord.CategoryChannel] = None,
     ):
         if not await _is_authorised(interaction):
             return await interaction.response.send_message("🚫 You need the **Incense Manager** role.", ephemeral=True)
 
         await interaction.response.defer(thinking=True)
 
-        channels = [ch for ch in [channel, channel2, channel3, channel4, channel5] if ch]
         guild_id = str(interaction.guild_id)
-        added   = []
+
+        direct_channels = [
+            ch for ch in [channel, channel2, channel3, channel4, channel5] if ch
+        ]
+        categories = [
+            cat for cat in [category1, category2, category3] if cat
+        ]
+
+        # Expand selected categories into all text channels inside them
+        category_channels: list[discord.TextChannel] = []
+        empty_categories: list[discord.CategoryChannel] = []
+
+        for category in categories:
+            text_children = [
+                ch for ch in category.channels
+                if isinstance(ch, discord.TextChannel)
+            ]
+            if text_children:
+                category_channels.extend(text_children)
+            else:
+                empty_categories.append(category)
+
+        # Merge and dedupe channels while preserving order
+        seen_ids = set()
+        channels: list[discord.TextChannel] = []
+        for ch in direct_channels + category_channels:
+            if ch.id not in seen_ids:
+                seen_ids.add(ch.id)
+                channels.append(ch)
+
+        if not channels:
+            return await interaction.followup.send(
+                "❌ No valid text channels were provided.",
+                ephemeral=True,
+            )
+
+        # Optional safety cap for huge category expansions
+        if len(channels) > 100:
+            return await interaction.followup.send(
+                f"❌ That selection expands to **{len(channels)}** channels. "
+                "Please split it into smaller chunks (max 100 at once).",
+                ephemeral=True,
+            )
+
+        added = []
         already = []
 
-        for ch in channels:
-            ok = await incense_db.add_channel(guild_id, str(ch.id), str(interaction.user.id))
+        async def register(ch: discord.TextChannel):
+            ok = await incense_db.add_channel(
+                guild_id,
+                str(ch.id),
+                str(interaction.user.id),
+            )
             (added if ok else already).append(ch)
+
+        for i in range(0, len(channels), 10):
+            await asyncio.gather(*[register(ch) for ch in channels[i:i + 10]])
+            if i + 10 < len(channels):
+                await asyncio.sleep(1)
 
         embed = discord.Embed(
             title="🌿 Incense Channels Updated",
             colour=0x57F287 if added else 0xFEE75C,
         )
+
+        if categories:
+            embed.description = (
+                f"Scanned **{len(direct_channels)}** direct channel input(s) and "
+                f"**{len(categories)}** categor{'y' if len(categories) == 1 else 'ies'} "
+                f"for a total of **{len(channels)}** unique text channel(s)."
+            )
+
         if added:
+            preview = "
+".join(ch.mention for ch in added[:20])
+            if len(added) > 20:
+                preview += f"
+*+{len(added)-20} more*"
             embed.add_field(
                 name=f"✅ Registered ({len(added)})",
-                value="\n".join(ch.mention for ch in added),
+                value=preview,
                 inline=False,
             )
+
         if already:
+            preview = "
+".join(ch.mention for ch in already[:20])
+            if len(already) > 20:
+                preview += f"
+*+{len(already)-20} more*"
             embed.add_field(
                 name=f"⏭️ Already registered ({len(already)})",
-                value="\n".join(ch.mention for ch in already),
+                value=preview,
                 inline=False,
             )
+
+        if empty_categories:
+            embed.add_field(
+                name=f"📂 Empty categories ({len(empty_categories)})",
+                value="
+".join(cat.name for cat in empty_categories[:10]),
+                inline=False,
+            )
+
         embed.set_footer(text=make_footer(guild_id, "Incense Manager"))
 
         if added:
+            category_names = [cat.name for cat in categories]
             await incense_db.log_action(
-                guild_id, str(interaction.user.id), "register",
-                f"Registered {len(added)} channel(s): {', '.join(ch.name for ch in added)}"
+                guild_id,
+                str(interaction.user.id),
+                "register",
+                (
+                    f"Registered {len(added)} channel(s) via /incense add. "
+                    f"Direct channels: {len(direct_channels)}. "
+                    f"Categories: {', '.join(category_names) if category_names else 'None'}."
+                ),
             )
+
         await interaction.followup.send(embed=embed)
 
     # ── /incense remove ──────────────────────────────────────────────────────
