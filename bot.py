@@ -36,6 +36,8 @@ COGS = [
     "cogs.channels",
     "cogs.changelog",
     "cogs.help",
+    # ── Starboard ─────────────────────────────────────────────────────────────
+    "cogs.starboard",
 ]
 
 
@@ -50,10 +52,11 @@ class QTsDex(commands.Bot):
 
     async def setup_hook(self):
         # ── Initialise databases ──────────────────────────────────────────────
-        from services import events_db, incense_db, guild_settings_db
+        from services import events_db, incense_db, guild_settings_db, starboard_db
         await events_db.init_db()
         await incense_db.init_db()
         await guild_settings_db.init_db()
+        await starboard_db.init_db()
         log.info("✅ Databases initialised")
 
         # ── Load cogs ─────────────────────────────────────────────────────────
