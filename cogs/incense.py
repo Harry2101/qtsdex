@@ -637,11 +637,9 @@ class IncenseCog(commands.Cog):
             )
 
         if added:
-            preview = "
-".join(ch.mention for ch in added[:20])
+            preview = "\n".join(ch.mention for ch in added[:20])
             if len(added) > 20:
-                preview += f"
-*+{len(added)-20} more*"
+                preview += f"\n*+{len(added)-20} more*"
             embed.add_field(
                 name=f"✅ Registered ({len(added)})",
                 value=preview,
@@ -649,11 +647,9 @@ class IncenseCog(commands.Cog):
             )
 
         if already:
-            preview = "
-".join(ch.mention for ch in already[:20])
+            preview = "\n".join(ch.mention for ch in already[:20])
             if len(already) > 20:
-                preview += f"
-*+{len(already)-20} more*"
+                preview += f"\n*+{len(already)-20} more*"
             embed.add_field(
                 name=f"⏭️ Already registered ({len(already)})",
                 value=preview,
@@ -663,8 +659,7 @@ class IncenseCog(commands.Cog):
         if empty_categories:
             embed.add_field(
                 name=f"📂 Empty categories ({len(empty_categories)})",
-                value="
-".join(cat.name for cat in empty_categories[:10]),
+                value="\n".join(cat.name for cat in empty_categories[:10]),
                 inline=False,
             )
 
