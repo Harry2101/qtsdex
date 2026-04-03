@@ -151,6 +151,16 @@ def get_changelog_channel(guild_id: str) -> Optional[int]:
     return int(val) if val else None
 
 
+def get_all_changelog_channels() -> dict[str, int]:
+    """Return {guild_id: channel_id} for all guilds with a changelog channel (sync, cached)."""
+    result = {}
+    for gid, settings in _cache.items():
+        val = settings.get("changelog_channel")
+        if val:
+            result[gid] = int(val)
+    return result
+
+
 async def set_changelog_channel(guild_id: str, channel_id: int) -> None:
     """Set the changelog channel for a guild."""
     await set_val(guild_id, "changelog_channel", str(channel_id))

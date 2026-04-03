@@ -16,11 +16,11 @@ from discord.ext import commands
 from services import events_db
 from utils import pokeapi
 from utils.autocomplete import pokemon_ac
-from utils.embeds import FOOTER, error_embed, type_colour, make_footer
+from utils.embeds import error_embed, type_colour, make_footer
 from utils.normalizer import normalize
 
-# Global guild ID — all servers share the same checklists
-GLOBAL_ID = "global"
+import os
+OWNER_ID = int(os.getenv("OWNER_ID", "145065060568530944"))
 
 LIST_CHOICES = [
     app_commands.Choice(name="🎯 Normal Grind", value="normal"),
@@ -38,7 +38,7 @@ SORT_LABELS = {
 
 async def _list_pokemon_ac(interaction: discord.Interaction, current: str):
     ctype = getattr(interaction.namespace, "list_type", "normal") or "normal"
-    cl    = await events_db.ensure_checklist(GLOBAL_ID, ctype)
+    cl    = await events_db.ensure_checklist(str(interaction.user.id), ctype)
     names = await events_db.get_target_names(cl["id"])
     return [
         app_commands.Choice(name=n.replace("-", " ").title(), value=n)
@@ -445,7 +445,7 @@ class ChecklistView(discord.ui.View):
             return await interaction.response.send_message("This isn't your checklist.", ephemeral=True)
         await interaction.response.defer()
         new_type   = "event" if self.ctype == "normal" else "normal"
-        cl         = await events_db.ensure_checklist(GLOBAL_ID, new_type)
+        cl         = await events_db.ensure_checklist(str(self.user.id), new_type)
         targets    = await events_db.get_targets(cl["id"])
         caught_ids = await events_db.get_user_catches(cl["id"], str(self.user.id))
         self.checklist_id   = cl["id"]
@@ -593,7 +593,7 @@ class FriendsListView(discord.ui.View):
                 embed=discord.Embed(title="❌ Could not find that user.", colour=0xED4245),
                 view=FriendsBackView(self.owner),
             )
-        cl         = await events_db.ensure_checklist(GLOBAL_ID, self.owner.ctype)
+        cl         = await events_db.ensure_checklist(friend_uid, self.owner.ctype)
         targets    = await events_db.get_targets(cl["id"])
         caught_ids = await events_db.get_user_catches(cl["id"], friend_uid)
         view = FriendChecklistView(
@@ -755,7 +755,7 @@ class FriendChecklistView(discord.ui.View):
             return await interaction.response.send_message("Not your view.", ephemeral=True)
         await interaction.response.defer()
         new_type   = "event" if self.ctype == "normal" else "normal"
-        cl         = await events_db.ensure_checklist(GLOBAL_ID, new_type)
+        cl         = await events_db.ensure_checklist(str(self.friend.id), new_type)
         targets    = await events_db.get_targets(cl["id"])
         caught_ids = await events_db.get_user_catches(cl["id"], str(self.friend.id))
         self.checklist_id = cl["id"]
@@ -871,6 +871,54 @@ class FriendRequestsView(discord.ui.View):
             )
 
 
+# ── Reset all confirmation (owner only) ──────────────────────────────────────
+
+class _ResetAllConfirmView(discord.ui.View):
+    """10-second confirmation for wiping all collections."""
+
+    def __init__(self, author: discord.User | discord.Member, guild_id: str):
+        super().__init__(timeout=10)
+        self.author   = author
+        self.guild_id = guild_id
+        self.confirmed = False
+
+    async def on_timeout(self):
+        if not self.confirmed:
+            self.stop()
+
+    @discord.ui.button(label="Confirm Reset All", style=discord.ButtonStyle.danger, emoji="🗑️")
+    async def confirm(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if interaction.user.id != self.author.id:
+            return await interaction.response.send_message("This isn't your confirmation.", ephemeral=True)
+        self.confirmed = True
+        self.stop()
+        await interaction.response.defer()
+        count = await events_db.reset_all_collections()
+        embed = discord.Embed(
+            title="🗑️  All Collections Reset",
+            description=(
+                f"Deleted **{count}** checklists and all associated targets & catches.\n\n"
+                "Every user's collection has been wiped clean."
+            ),
+            colour=0xED4245,
+        )
+        embed.set_footer(text=make_footer(self.guild_id))
+        await interaction.edit_original_response(embed=embed, view=None)
+
+    @discord.ui.button(label="Cancel", style=discord.ButtonStyle.secondary, emoji="✖️")
+    async def cancel(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if interaction.user.id != self.author.id:
+            return await interaction.response.send_message("This isn't your confirmation.", ephemeral=True)
+        self.stop()
+        embed = discord.Embed(
+            title="❌  Cancelled",
+            description="No collections were reset.",
+            colour=0x57F287,
+        )
+        embed.set_footer(text=make_footer(self.guild_id))
+        await interaction.response.edit_message(embed=embed, view=None)
+
+
 # ── Cog ───────────────────────────────────────────────────────────────────────
 
 class EventsCog(commands.Cog):
@@ -879,17 +927,18 @@ class EventsCog(commands.Cog):
 
     @app_commands.command(
         name="event_setup",
-        description="Set the active event hunt name (global, shared across all servers).",
+        description="Set your active event hunt name.",
     )
     @app_commands.describe(name="Event name e.g. 'Community Day May 2025'")
     async def event_setup(self, interaction: discord.Interaction, name: str):
-        await events_db.rename_checklist(GLOBAL_ID, "event", name)
+        await events_db.rename_checklist(str(interaction.user.id), "event", name)
+        gid = str(interaction.guild_id or "")
         embed = discord.Embed(
             title="✨ Event Updated",
-            description=f"Active event is now **{name}** (visible everywhere).",
+            description=f"Your active event is now **{name}**.",
             colour=0xF95587,
         )
-        embed.set_footer(text=FOOTER)
+        embed.set_footer(text=make_footer(gid))
         await interaction.response.send_message(embed=embed)
 
     checklist = app_commands.Group(
@@ -915,7 +964,8 @@ class EventsCog(commands.Cog):
     ):
         await interaction.response.defer(thinking=True)
 
-        cl     = await events_db.ensure_checklist(GLOBAL_ID, list_type)
+        gid    = str(interaction.guild_id or "")
+        cl     = await events_db.ensure_checklist(str(interaction.user.id), list_type)
         parsed = _parse_bulk(pokemon)
         if not parsed:
             return await interaction.followup.send(
@@ -967,7 +1017,7 @@ class EventsCog(commands.Cog):
             embed.add_field(name=f"Not found ({len(not_found)})",
                             value=", ".join(not_found[:15]), inline=False)
 
-        embed.set_footer(text=f"King's Dex  •  {total_now} Pokémon on list  •  powered by PokéAPI")
+        embed.set_footer(text=make_footer(gid, f"{total_now} Pokémon on list  •  powered by PokéAPI"))
 
         if added and unique:
             sprite = await _get_sprite(unique[0][0])
@@ -995,7 +1045,7 @@ class EventsCog(commands.Cog):
     ):
         await interaction.response.defer(thinking=True)
 
-        cl     = await events_db.ensure_checklist(GLOBAL_ID, list_type)
+        cl     = await events_db.ensure_checklist(str(interaction.user.id), list_type)
         parsed = _parse_bulk(pokemon)
         if not parsed:
             return await interaction.followup.send(
@@ -1052,9 +1102,10 @@ class EventsCog(commands.Cog):
     ):
         await interaction.response.defer(thinking=True)
         gid        = str(interaction.guild_id or "")
-        cl         = await events_db.ensure_checklist(GLOBAL_ID, list_type)
+        uid        = str(interaction.user.id)
+        cl         = await events_db.ensure_checklist(uid, list_type)
         targets    = await events_db.get_targets(cl["id"])
-        caught_ids = await events_db.get_user_catches(cl["id"], str(interaction.user.id))
+        caught_ids = await events_db.get_user_catches(cl["id"], uid)
         view       = ChecklistView(
             checklist_id=cl["id"], ctype=list_type, label=cl["label"],
             targets=targets, caught_ids=caught_ids, user=interaction.user, guild_id=gid,
@@ -1074,7 +1125,8 @@ class EventsCog(commands.Cog):
         list_type:   str = "normal",
     ):
         await interaction.response.defer(thinking=True)
-        cl     = await events_db.ensure_checklist(GLOBAL_ID, list_type)
+        uid    = str(interaction.user.id)
+        cl     = await events_db.ensure_checklist(uid, list_type)
         target = await events_db.get_target_by_pokemon(cl["id"], pokemon)
         if not target:
             return await interaction.followup.send(
@@ -1083,9 +1135,9 @@ class EventsCog(commands.Cog):
                 ephemeral=True,
             )
         gid = str(interaction.guild_id or "")
-        await events_db.mark_caught(cl["id"], target["id"], str(interaction.user.id))
+        await events_db.mark_caught(cl["id"], target["id"], uid)
         targets    = await events_db.get_targets(cl["id"])
-        caught_ids = await events_db.get_user_catches(cl["id"], str(interaction.user.id))
+        caught_ids = await events_db.get_user_catches(cl["id"], uid)
         view       = ChecklistView(
             checklist_id=cl["id"], ctype=list_type, label=cl["label"],
             targets=targets, caught_ids=caught_ids, user=interaction.user, guild_id=gid,
@@ -1105,7 +1157,8 @@ class EventsCog(commands.Cog):
         list_type:   str = "normal",
     ):
         await interaction.response.defer(thinking=True)
-        cl     = await events_db.ensure_checklist(GLOBAL_ID, list_type)
+        uid    = str(interaction.user.id)
+        cl     = await events_db.ensure_checklist(uid, list_type)
         target = await events_db.get_target_by_pokemon(cl["id"], pokemon)
         if not target:
             return await interaction.followup.send(
@@ -1114,9 +1167,9 @@ class EventsCog(commands.Cog):
                 ephemeral=True,
             )
         gid = str(interaction.guild_id or "")
-        await events_db.unmark_caught(cl["id"], target["id"], str(interaction.user.id))
+        await events_db.unmark_caught(cl["id"], target["id"], uid)
         targets    = await events_db.get_targets(cl["id"])
-        caught_ids = await events_db.get_user_catches(cl["id"], str(interaction.user.id))
+        caught_ids = await events_db.get_user_catches(cl["id"], uid)
         view       = ChecklistView(
             checklist_id=cl["id"], ctype=list_type, label=cl["label"],
             targets=targets, caught_ids=caught_ids, user=interaction.user, guild_id=gid,
@@ -1135,15 +1188,43 @@ class EventsCog(commands.Cog):
     ):
         await interaction.response.defer(thinking=True)
         gid        = str(interaction.guild_id or "")
-        cl         = await events_db.ensure_checklist(GLOBAL_ID, list_type)
+        uid        = str(interaction.user.id)
+        cl         = await events_db.ensure_checklist(uid, list_type)
         targets    = await events_db.get_targets(cl["id"])
-        caught_ids = await events_db.get_user_catches(cl["id"], str(interaction.user.id))
+        caught_ids = await events_db.get_user_catches(cl["id"], uid)
         view       = ChecklistView(
             checklist_id=cl["id"], ctype=list_type, label=cl["label"],
             targets=targets, caught_ids=caught_ids, user=interaction.user,
             remaining_only=True, guild_id=gid,
         )
         await interaction.followup.send(embed=view._embed(), view=view)
+
+    # ── /checklist reset_all (owner only) ───────────────────────────────────
+
+    @checklist.command(
+        name="reset_all",
+        description="Reset ALL collections for every user. Owner only.",
+    )
+    async def cl_reset_all(self, interaction: discord.Interaction):
+        if interaction.user.id != OWNER_ID:
+            return await interaction.response.send_message(
+                "🚫 Only the bot owner can use this command.", ephemeral=True
+            )
+        gid = str(interaction.guild_id or "")
+        embed = discord.Embed(
+            title="⚠️  Reset ALL Collections?",
+            description=(
+                "This will **permanently delete every user's checklists, "
+                "targets, and catch progress**.\n\n"
+                "This affects **ALL users across ALL servers**.\n\n"
+                "**This cannot be undone.**\n\n"
+                "Click **Confirm** within **10 seconds** to proceed."
+            ),
+            colour=0xED4245,
+        )
+        embed.set_footer(text=make_footer(gid))
+        view = _ResetAllConfirmView(interaction.user, gid)
+        await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
 
     # ── /checklist friend ────────────────────────────────────────────────────
 

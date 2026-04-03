@@ -45,6 +45,16 @@ log = logging.getLogger("qtsdex.incense")
 
 OWNER_ID       = int(os.getenv("OWNER_ID", "145065060568530944"))
 DEFAULT_OPDEX  = int(os.getenv("DEFAULT_OPDEX_BOT_ID", "1471263987340410978"))
+_QT_GUILD_ID   = "1477887017034584248"
+
+_NOT_QT_MSG = "🚫 Mass Incense management is only available in the QTs server."
+
+
+def _is_qt_guild(ctx_or_interaction) -> bool:
+    """Check if this is the QTs server."""
+    if isinstance(ctx_or_interaction, commands.Context):
+        return str(getattr(ctx_or_interaction.guild, "id", "")) == _QT_GUILD_ID
+    return str(getattr(ctx_or_interaction, "guild_id", "")) == _QT_GUILD_ID
 
 
 # ── Permission helpers ────────────────────────────────────────────────────────
@@ -184,7 +194,7 @@ def _resume_embed(unlocked, already, failed, cleaned, guild_id: str = "") -> dis
     return embed
 
 
-def _auto_lock_embed(channel, incense_type, total_spawns) -> discord.Embed:
+def _auto_lock_embed(channel, incense_type, total_spawns, guild_id: str = "") -> discord.Embed:
     embed = discord.Embed(
         title="🔒  Incense Auto-Paused",
         description=(
@@ -198,8 +208,153 @@ def _auto_lock_embed(channel, incense_type, total_spawns) -> discord.Embed:
     if total_spawns:
         embed.add_field(name="📊 Total Spawns", value=str(total_spawns), inline=True)
     embed.add_field(name="📍 Channel", value=channel.mention, inline=True)
-    embed.set_footer(text="King's Dex  •  Use !resume to start all incenses simultaneously")
+    embed.set_footer(text=make_footer(guild_id, "Use !resume to start all incenses simultaneously"))
     return embed
+
+
+# ── Confirmation views ───────────────────────────────────────────────────────
+
+class _IncenseAddConfirmView(discord.ui.View):
+    """5-second confirm for bulk incense add."""
+    def __init__(self, author: discord.User, channels: list[discord.TextChannel],
+                 guild_id: str, user_id: str):
+        super().__init__(timeout=5)
+        self.author   = author
+        self.channels = channels
+        self.guild_id = guild_id
+        self.user_id  = user_id
+        self.confirmed = False
+
+    async def on_timeout(self):
+        if not self.confirmed:
+            self.stop()
+
+    @discord.ui.button(label="Confirm", style=discord.ButtonStyle.success, emoji="✅")
+    async def confirm(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if interaction.user.id != self.author.id:
+            return await interaction.response.send_message("Not your confirmation.", ephemeral=True)
+        self.confirmed = True
+        self.stop()
+        await interaction.response.defer()
+
+        cids = [str(ch.id) for ch in self.channels]
+        added_ids, already_ids = await incense_db.bulk_add_channels(
+            self.guild_id, cids, self.user_id
+        )
+
+        added   = [ch for ch in self.channels if str(ch.id) in added_ids]
+        already = [ch for ch in self.channels if str(ch.id) in already_ids]
+
+        # Send setup notification to each newly added channel
+        for ch in added:
+            try:
+                notify = discord.Embed(
+                    title="🌿 Incense Channel Activated",
+                    description=(
+                        "This channel has been set up as a **QTs mass incense channel**.\n\n"
+                        "When an incense is activated here, the channel will be "
+                        "**automatically locked** until the organiser runs `!resume`."
+                    ),
+                    colour=0x57F287,
+                )
+                notify.set_footer(text=make_footer(self.guild_id, "Incense Manager"))
+                await ch.send(embed=notify)
+            except discord.Forbidden:
+                pass
+
+        embed = discord.Embed(
+            title="🌿 Incense Channels Updated",
+            colour=0x57F287 if added else 0xFEE75C,
+        )
+        if added:
+            preview = ", ".join(ch.mention for ch in added[:20])
+            if len(added) > 20:
+                preview += f" *+{len(added) - 20} more*"
+            embed.add_field(name=f"✅ Registered ({len(added)})", value=preview, inline=False)
+        if already:
+            preview = ", ".join(ch.mention for ch in already[:15])
+            if len(already) > 15:
+                preview += f" *+{len(already) - 15} more*"
+            embed.add_field(name=f"⏭️ Already registered ({len(already)})", value=preview, inline=False)
+        embed.set_footer(text=make_footer(self.guild_id, "Incense Manager"))
+
+        if added:
+            await incense_db.log_action(
+                self.guild_id, self.user_id, "register",
+                f"Registered {len(added)} channel(s): {', '.join(ch.name for ch in added[:10])}"
+            )
+        await interaction.edit_original_response(embed=embed, view=None)
+
+    @discord.ui.button(label="Cancel", style=discord.ButtonStyle.secondary, emoji="✖️")
+    async def cancel(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if interaction.user.id != self.author.id:
+            return await interaction.response.send_message("Not your confirmation.", ephemeral=True)
+        self.stop()
+        await interaction.response.edit_message(
+            embed=discord.Embed(title="❌ Cancelled", description="No channels were registered.", colour=0xED4245),
+            view=None,
+        )
+
+
+class _IncenseRemoveConfirmView(discord.ui.View):
+    """5-second confirm for bulk incense remove."""
+    def __init__(self, author: discord.User, channels: list[discord.TextChannel],
+                 guild_id: str, user_id: str):
+        super().__init__(timeout=5)
+        self.author   = author
+        self.channels = channels
+        self.guild_id = guild_id
+        self.user_id  = user_id
+        self.confirmed = False
+
+    async def on_timeout(self):
+        if not self.confirmed:
+            self.stop()
+
+    @discord.ui.button(label="Remove", style=discord.ButtonStyle.danger, emoji="🗑️")
+    async def confirm(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if interaction.user.id != self.author.id:
+            return await interaction.response.send_message("Not your confirmation.", ephemeral=True)
+        self.confirmed = True
+        self.stop()
+        await interaction.response.defer()
+
+        cids = [str(ch.id) for ch in self.channels]
+        removed_ids, notfound_ids = await incense_db.bulk_remove_channels(self.guild_id, cids)
+
+        removed  = [ch for ch in self.channels if str(ch.id) in removed_ids]
+        notfound = [ch for ch in self.channels if str(ch.id) in notfound_ids]
+
+        embed = discord.Embed(
+            title="🌿 Incense Channels Removed",
+            colour=0x57F287 if removed else 0xFEE75C,
+        )
+        if removed:
+            preview = ", ".join(ch.mention for ch in removed[:20])
+            if len(removed) > 20:
+                preview += f" *+{len(removed) - 20} more*"
+            embed.add_field(name=f"🗑️ Removed ({len(removed)})", value=preview, inline=False)
+        if notfound:
+            preview = ", ".join(ch.mention for ch in notfound[:15])
+            embed.add_field(name=f"⏭️ Not registered ({len(notfound)})", value=preview, inline=False)
+        embed.set_footer(text=make_footer(self.guild_id, "Incense Manager"))
+
+        if removed:
+            await incense_db.log_action(
+                self.guild_id, self.user_id, "bulk_unregister",
+                f"Removed {len(removed)} channel(s): {', '.join(ch.name for ch in removed[:10])}"
+            )
+        await interaction.edit_original_response(embed=embed, view=None)
+
+    @discord.ui.button(label="Cancel", style=discord.ButtonStyle.secondary, emoji="✖️")
+    async def cancel(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if interaction.user.id != self.author.id:
+            return await interaction.response.send_message("Not your confirmation.", ephemeral=True)
+        self.stop()
+        await interaction.response.edit_message(
+            embed=discord.Embed(title="❌ Cancelled", description="No channels were removed.", colour=0xED4245),
+            view=None,
+        )
 
 
 # ── Cog ───────────────────────────────────────────────────────────────────────
@@ -264,7 +419,7 @@ class IncenseCog(commands.Cog):
         success = await _lock_channel(message.channel, opdex_id)
         if success:
             await message.channel.send(embed=_auto_lock_embed(
-                message.channel, incense_type, total_spawns
+                message.channel, incense_type, total_spawns, guild_id
             ))
             await incense_db.log_action(
                 guild_id, str(self.bot.user.id), "auto_lock",
@@ -280,6 +435,8 @@ class IncenseCog(commands.Cog):
 
     @commands.command(name="pause")
     async def pause_cmd(self, ctx: commands.Context):
+        if not _is_qt_guild(ctx):
+            return
         if not await _is_authorised(ctx):
             return await ctx.send(
                 "🚫 You don't have permission. An admin must set up the Incense Manager "
@@ -331,6 +488,8 @@ class IncenseCog(commands.Cog):
 
     @commands.command(name="resume")
     async def resume_cmd(self, ctx: commands.Context):
+        if not _is_qt_guild(ctx):
+            return
         if not await _is_authorised(ctx):
             return await ctx.send(
                 "🚫 You don't have permission. An admin must set up the Incense Manager "
@@ -387,6 +546,8 @@ class IncenseCog(commands.Cog):
 
     @commands.command(name="incset")
     async def incset_cmd(self, ctx: commands.Context, *, args: str = ""):
+        if not _is_qt_guild(ctx):
+            return
         if not await _is_authorised(ctx):
             return await ctx.send("🚫 You need the **Incense Manager** role to register incense channels.")
 
@@ -432,7 +593,7 @@ class IncenseCog(commands.Cog):
                 value="\n".join(f"`{i}`" for i in invalid[:10]),
                 inline=False,
             )
-        embed.set_footer(text="King's Dex  •  Use /incense status to see all registered channels")
+        embed.set_footer(text=make_footer(guild_id, "Incense Manager"))
 
         if added:
             await incense_db.log_action(
@@ -459,6 +620,8 @@ class IncenseCog(commands.Cog):
     @setup_group.command(name="role", description="Set which role can manage incenses in this server.")
     @app_commands.describe(role="The role that can manage incenses")
     async def setup_role(self, interaction: discord.Interaction, role: discord.Role):
+        if not _is_qt_guild(interaction):
+            return await interaction.response.send_message(_NOT_QT_MSG, ephemeral=True)
         if not interaction.user.guild_permissions.administrator and interaction.user.id != OWNER_ID:
             return await interaction.response.send_message(
                 "🚫 Only server administrators can configure the incense manager role.", ephemeral=True
@@ -483,6 +646,8 @@ class IncenseCog(commands.Cog):
     @setup_group.command(name="bot", description="Set which bot is the Operation Dex bot for auto-detection.")
     @app_commands.describe(bot_id="The bot's user ID (right-click the bot → Copy User ID)")
     async def setup_bot(self, interaction: discord.Interaction, bot_id: str):
+        if not _is_qt_guild(interaction):
+            return await interaction.response.send_message(_NOT_QT_MSG, ephemeral=True)
         if not interaction.user.guild_permissions.administrator and interaction.user.id != OWNER_ID:
             return await interaction.response.send_message(
                 "🚫 Only server administrators can configure the Operation Dex bot.", ephemeral=True
@@ -511,6 +676,8 @@ class IncenseCog(commands.Cog):
 
     @setup_group.command(name="view", description="View the current incense configuration for this server.")
     async def setup_view(self, interaction: discord.Interaction):
+        if not _is_qt_guild(interaction):
+            return await interaction.response.send_message(_NOT_QT_MSG, ephemeral=True)
         if not await _is_authorised(interaction):
             return await interaction.response.send_message("🚫 You need the **Incense Manager** role.", ephemeral=True)
 
@@ -532,92 +699,88 @@ class IncenseCog(commands.Cog):
 
     # ── /incense add ─────────────────────────────────────────────────────────
 
-    @incense.command(
-        name="add",
-        description="Register up to 5 channels and/or one or more full categories as incense channels.",
-    )
+    @incense.command(name="add", description="Register incense channels — individual, by category, or by range.")
     @app_commands.describe(
-        channel="A channel to register (optional)",
-        channel2="Another channel (optional)",
-        channel3="Another channel (optional)",
-        channel4="Another channel (optional)",
-        channel5="Another channel (optional)",
-        category1="A category whose text channels should all be registered (optional)",
-        category2="Another category to fully register (optional)",
-        category3="Another category to fully register (optional)",
+        channel="A single channel to add",
+        category="Add all channels in this category",
+        category2="Add all channels in a second category (optional)",
+        category3="Add all channels in a third category (optional)",
+        from_channel="Start of a range to add (inclusive)",
+        to_channel="End of a range to add (inclusive)",
     )
     async def inc_add(
         self,
-        interaction: discord.Interaction,
-        channel: Optional[discord.TextChannel] = None,
-        channel2: Optional[discord.TextChannel] = None,
-        channel3: Optional[discord.TextChannel] = None,
-        channel4: Optional[discord.TextChannel] = None,
-        channel5: Optional[discord.TextChannel] = None,
-        category1: Optional[discord.CategoryChannel] = None,
-        category2: Optional[discord.CategoryChannel] = None,
-        category3: Optional[discord.CategoryChannel] = None,
+        interaction:   discord.Interaction,
+        channel:       Optional[discord.TextChannel]       = None,
+        category:      Optional[discord.CategoryChannel]   = None,
+        category2:     Optional[discord.CategoryChannel]   = None,
+        category3:     Optional[discord.CategoryChannel]   = None,
+        from_channel:  Optional[discord.TextChannel]       = None,
+        to_channel:    Optional[discord.TextChannel]       = None,
     ):
+        if not _is_qt_guild(interaction):
+            return await interaction.response.send_message(_NOT_QT_MSG, ephemeral=True)
         if not await _is_authorised(interaction):
             return await interaction.response.send_message("🚫 You need the **Incense Manager** role.", ephemeral=True)
 
-        await interaction.response.defer(thinking=True)
-
         guild_id = str(interaction.guild_id)
+        targets: list[discord.TextChannel] = []
 
-        direct_channels = [
-            ch for ch in [channel, channel2, channel3, channel4, channel5] if ch
-        ]
-        categories = [
-            cat for cat in [category1, category2, category3] if cat
-        ]
+        # Mode 1: single channel
+        if channel:
+            targets.append(channel)
 
-        # Expand selected categories into all text channels inside them
-        category_channels: list[discord.TextChannel] = []
-        empty_categories: list[discord.CategoryChannel] = []
+        # Mode 2: whole categories
+        for cat in [category, category2, category3]:
+            if cat:
+                targets.extend(
+                    ch for ch in cat.channels
+                    if isinstance(ch, discord.TextChannel) and ch not in targets
+                )
 
-        for category in categories:
-            text_children = [
-                ch for ch in category.channels
-                if isinstance(ch, discord.TextChannel)
-            ]
-            if text_children:
-                category_channels.extend(text_children)
-            else:
-                empty_categories.append(category)
+        # Mode 3: range
+        if from_channel and to_channel:
+            cat = from_channel.category
+            pool = sorted(
+                [ch for ch in interaction.guild.text_channels if ch.category == cat],
+                key=lambda c: c.position,
+            )
+            try:
+                si = next(i for i, c in enumerate(pool) if c.id == from_channel.id)
+                ei = next(i for i, c in enumerate(pool) if c.id == to_channel.id)
+            except StopIteration:
+                return await interaction.response.send_message(
+                    "❌ Could not resolve channel range. Ensure both are in the same category.",
+                    ephemeral=True,
+                )
+            if si > ei:
+                si, ei = ei, si
+            for ch in pool[si:ei + 1]:
+                if ch not in targets:
+                    targets.append(ch)
+        elif from_channel or to_channel:
+            return await interaction.response.send_message(
+                "⚠️ Provide **both** `from_channel` and `to_channel` for a range.", ephemeral=True
+            )
 
-        # Merge and dedupe channels while preserving order
-        seen_ids = set()
-        channels: list[discord.TextChannel] = []
-        for ch in direct_channels + category_channels:
-            if ch.id not in seen_ids:
-                seen_ids.add(ch.id)
-                channels.append(ch)
-
-        if not channels:
-            return await interaction.followup.send(
-                "❌ No valid text channels were provided.",
+        if not targets:
+            return await interaction.response.send_message(
+                "⚠️ No channels specified. Provide `channel`, `category`, or `from_channel`+`to_channel`.",
                 ephemeral=True,
             )
 
-        # Optional safety cap for huge category expansions
-        if len(channels) > 100:
-            return await interaction.followup.send(
-                f"❌ That selection expands to **{len(channels)}** channels. "
-                "Please split it into smaller chunks (max 100 at once).",
-                ephemeral=True,
-            )
+        # Deduplicate while preserving order
+        seen: set[int] = set()
+        unique: list[discord.TextChannel] = []
+        for ch in targets:
+            if ch.id not in seen:
+                seen.add(ch.id)
+                unique.append(ch)
 
-        added = []
-        already = []
-
-        async def register(ch: discord.TextChannel):
-            ok = await incense_db.add_channel(
-                guild_id,
-                str(ch.id),
-                str(interaction.user.id),
-            )
-            (added if ok else already).append(ch)
+        # Build confirmation
+        preview = ", ".join(ch.mention for ch in unique[:25])
+        if len(unique) > 25:
+            preview += f" *+{len(unique) - 25} more*"
 
         for i in range(0, len(channels), 10):
             await asyncio.gather(*[register(ch) for ch in channels[i:i + 10]])
@@ -625,82 +788,111 @@ class IncenseCog(commands.Cog):
                 await asyncio.sleep(1)
 
         embed = discord.Embed(
-            title="🌿 Incense Channels Updated",
-            colour=0x57F287 if added else 0xFEE75C,
+            title="⚠️  Confirm Incense Channel Registration",
+            description=(
+                f"**{len(unique)}** channel{'s' if len(unique) != 1 else ''} will be registered:\n\n"
+                f"{preview}\n\n"
+                "Each channel will receive a setup notification.\n"
+                "*Click Confirm within 5 seconds.*"
+            ),
+            colour=0xFEE75C,
         )
-
-        if categories:
-            embed.description = (
-                f"Scanned **{len(direct_channels)}** direct channel input(s) and "
-                f"**{len(categories)}** categor{'y' if len(categories) == 1 else 'ies'} "
-                f"for a total of **{len(channels)}** unique text channel(s)."
-            )
-
-        if added:
-            preview = "\n".join(ch.mention for ch in added[:20])
-            if len(added) > 20:
-                preview += f"\n*+{len(added)-20} more*"
-            embed.add_field(
-                name=f"✅ Registered ({len(added)})",
-                value=preview,
-                inline=False,
-            )
-
-        if already:
-            preview = "\n".join(ch.mention for ch in already[:20])
-            if len(already) > 20:
-                preview += f"\n*+{len(already)-20} more*"
-            embed.add_field(
-                name=f"⏭️ Already registered ({len(already)})",
-                value=preview,
-                inline=False,
-            )
-
-        if empty_categories:
-            embed.add_field(
-                name=f"📂 Empty categories ({len(empty_categories)})",
-                value="\n".join(cat.name for cat in empty_categories[:10]),
-                inline=False,
-            )
-
         embed.set_footer(text=make_footer(guild_id, "Incense Manager"))
 
-        if added:
-            category_names = [cat.name for cat in categories]
-            await incense_db.log_action(
-                guild_id,
-                str(interaction.user.id),
-                "register",
-                (
-                    f"Registered {len(added)} channel(s) via /incense add. "
-                    f"Direct channels: {len(direct_channels)}. "
-                    f"Categories: {', '.join(category_names) if category_names else 'None'}."
-                ),
-            )
-
-        await interaction.followup.send(embed=embed)
+        view = _IncenseAddConfirmView(interaction.user, unique, guild_id, str(interaction.user.id))
+        await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
 
     # ── /incense remove ──────────────────────────────────────────────────────
 
-    @incense.command(name="remove", description="Remove a channel from the incense channel list.")
-    @app_commands.describe(channel="The channel to remove")
-    async def inc_remove(self, interaction: discord.Interaction, channel: discord.TextChannel):
+    @incense.command(name="remove", description="Unregister incense channels — individual, by category, or by range.")
+    @app_commands.describe(
+        channel="A single channel to remove",
+        category="Remove all channels in this category",
+        category2="Remove all channels in a second category (optional)",
+        category3="Remove all channels in a third category (optional)",
+        from_channel="Start of a range to remove (inclusive)",
+        to_channel="End of a range to remove (inclusive)",
+    )
+    async def inc_remove(
+        self,
+        interaction:   discord.Interaction,
+        channel:       Optional[discord.TextChannel]       = None,
+        category:      Optional[discord.CategoryChannel]   = None,
+        category2:     Optional[discord.CategoryChannel]   = None,
+        category3:     Optional[discord.CategoryChannel]   = None,
+        from_channel:  Optional[discord.TextChannel]       = None,
+        to_channel:    Optional[discord.TextChannel]       = None,
+    ):
+        if not _is_qt_guild(interaction):
+            return await interaction.response.send_message(_NOT_QT_MSG, ephemeral=True)
         if not await _is_authorised(interaction):
             return await interaction.response.send_message("🚫 You need the **Incense Manager** role.", ephemeral=True)
 
-        ok = await incense_db.remove_channel(str(interaction.guild_id), str(channel.id))
-        if ok:
-            await incense_db.log_action(
-                str(interaction.guild_id), str(interaction.user.id), "unregister",
-                f"Removed {channel.name} ({channel.id})"
+        guild_id = str(interaction.guild_id)
+        targets: list[discord.TextChannel] = []
+
+        if channel:
+            targets.append(channel)
+
+        for cat in [category, category2, category3]:
+            if cat:
+                targets.extend(
+                    ch for ch in cat.channels
+                    if isinstance(ch, discord.TextChannel) and ch not in targets
+                )
+
+        if from_channel and to_channel:
+            cat = from_channel.category
+            pool = sorted(
+                [ch for ch in interaction.guild.text_channels if ch.category == cat],
+                key=lambda c: c.position,
             )
-            await interaction.response.send_message(
-                f"✅ {channel.mention} has been removed from the incense channel list."
+            try:
+                si = next(i for i, c in enumerate(pool) if c.id == from_channel.id)
+                ei = next(i for i, c in enumerate(pool) if c.id == to_channel.id)
+            except StopIteration:
+                return await interaction.response.send_message(
+                    "❌ Could not resolve channel range.", ephemeral=True
+                )
+            if si > ei:
+                si, ei = ei, si
+            for ch in pool[si:ei + 1]:
+                if ch not in targets:
+                    targets.append(ch)
+        elif from_channel or to_channel:
+            return await interaction.response.send_message(
+                "⚠️ Provide **both** `from_channel` and `to_channel` for a range.", ephemeral=True
             )
-        else:
-            await interaction.response.send_message(
-                f"ℹ️ {channel.mention} wasn't registered as an incense channel.", ephemeral=True
+
+        if not targets:
+            return await interaction.response.send_message(
+                "⚠️ No channels specified.", ephemeral=True,
             )
+
+        seen: set[int] = set()
+        unique: list[discord.TextChannel] = []
+        for ch in targets:
+            if ch.id not in seen:
+                seen.add(ch.id)
+                unique.append(ch)
+
+        preview = ", ".join(ch.mention for ch in unique[:25])
+        if len(unique) > 25:
+            preview += f" *+{len(unique) - 25} more*"
+
+        embed = discord.Embed(
+            title="⚠️  Confirm Incense Channel Removal",
+            description=(
+                f"**{len(unique)}** channel{'s' if len(unique) != 1 else ''} will be unregistered:\n\n"
+                f"{preview}\n\n"
+                "*Click Remove within 5 seconds.*"
+            ),
+            colour=0xED4245,
+        )
+        embed.set_footer(text=make_footer(guild_id, "Incense Manager"))
+
+        view = _IncenseRemoveConfirmView(interaction.user, unique, guild_id, str(interaction.user.id))
+        await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
 
     # ── /incense lock ────────────────────────────────────────────────────────
 
@@ -711,6 +903,8 @@ class IncenseCog(commands.Cog):
         interaction: discord.Interaction,
         channel:     Optional[discord.TextChannel] = None,
     ):
+        if not _is_qt_guild(interaction):
+            return await interaction.response.send_message(_NOT_QT_MSG, ephemeral=True)
         if not await _is_authorised(interaction):
             return await interaction.response.send_message("🚫 You need the **Incense Manager** role.", ephemeral=True)
 
@@ -757,6 +951,8 @@ class IncenseCog(commands.Cog):
         interaction: discord.Interaction,
         channel:     Optional[discord.TextChannel] = None,
     ):
+        if not _is_qt_guild(interaction):
+            return await interaction.response.send_message(_NOT_QT_MSG, ephemeral=True)
         if not await _is_authorised(interaction):
             return await interaction.response.send_message("🚫 You need the **Incense Manager** role.", ephemeral=True)
 
@@ -814,6 +1010,8 @@ class IncenseCog(commands.Cog):
         include_current: bool                             = False,
         end_channel:     Optional[discord.TextChannel]   = None,
     ):
+        if not _is_qt_guild(interaction):
+            return await interaction.response.send_message(_NOT_QT_MSG, ephemeral=True)
         if not await _is_authorised(interaction):
             return await interaction.response.send_message("🚫 You need the **Incense Manager** role.", ephemeral=True)
 
@@ -908,6 +1106,8 @@ class IncenseCog(commands.Cog):
 
     @incense.command(name="status", description="Show all incense channels and their current state.")
     async def inc_status(self, interaction: discord.Interaction):
+        if not _is_qt_guild(interaction):
+            return await interaction.response.send_message(_NOT_QT_MSG, ephemeral=True)
         if not await _is_authorised(interaction):
             return await interaction.response.send_message("🚫 You need the **Incense Manager** role.", ephemeral=True)
 
@@ -981,6 +1181,8 @@ class IncenseCog(commands.Cog):
         interaction: discord.Interaction,
         channel:     Optional[discord.TextChannel] = None,
     ):
+        if not _is_qt_guild(interaction):
+            return await interaction.response.send_message(_NOT_QT_MSG, ephemeral=True)
         if not await _is_authorised(interaction):
             return await interaction.response.send_message("🚫 You need the **Incense Manager** role.", ephemeral=True)
 
@@ -1007,14 +1209,18 @@ class IncenseCog(commands.Cog):
     @incense.command(name="log", description="View the incense audit log for this server.")
     @app_commands.describe(
         user="Filter by user (optional)",
+        channel="Filter by channel (optional)",
         limit="Number of entries to show (default: 15)",
     )
     async def inc_log(
         self,
         interaction: discord.Interaction,
-        user:  Optional[discord.Member] = None,
-        limit: int = 15,
+        user:    Optional[discord.Member]      = None,
+        channel: Optional[discord.TextChannel] = None,
+        limit:   int = 15,
     ):
+        if not _is_qt_guild(interaction):
+            return await interaction.response.send_message(_NOT_QT_MSG, ephemeral=True)
         # Only admins and owner can view the full audit log
         if not interaction.user.guild_permissions.administrator and interaction.user.id != OWNER_ID:
             return await interaction.response.send_message(
@@ -1026,12 +1232,20 @@ class IncenseCog(commands.Cog):
         guild_id = str(interaction.guild_id)
         limit    = max(1, min(limit, 50))
 
+        user_id_filter    = str(user.id) if user else None
+        channel_id_filter = str(channel.id) if channel else None
+
+        entries = await incense_db.get_audit_log(
+            guild_id, limit, user_id=user_id_filter, channel_id=channel_id_filter
+        )
+
+        # Build title
+        parts = ["📋 Audit Log"]
         if user:
-            entries = await incense_db.get_audit_log(guild_id, limit, str(user.id))
-            title   = f"📋 Audit Log — {user.display_name}"
-        else:
-            entries = await incense_db.get_audit_log(guild_id, limit)
-            title   = "📋 Incense Audit Log"
+            parts.append(f"— {user.display_name}")
+        if channel:
+            parts.append(f"— #{channel.name}")
+        title = " ".join(parts) if (user or channel) else "📋 Incense Audit Log"
 
         if not entries:
             return await interaction.followup.send(
@@ -1071,8 +1285,8 @@ class IncenseCog(commands.Cog):
 
         embed = discord.Embed(title=title, description=text, colour=0x5865F2)
 
-        # If no user filter, also show summary
-        if not user:
+        # If no user/channel filter, also show summary
+        if not user and not channel:
             summary = await incense_db.get_user_action_summary(guild_id)
             if summary:
                 summary_lines = [

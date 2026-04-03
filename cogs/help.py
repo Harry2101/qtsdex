@@ -11,7 +11,7 @@ from discord import app_commands
 from discord.ext import commands
 
 from services import guild_settings_db
-from services.guild_settings_db import make_footer
+from services.guild_settings_db import make_footer, get_bot_name
 
 OWNER_ID = int(os.getenv("OWNER_ID", "145065060568530944"))
 
@@ -36,10 +36,13 @@ class HelpCog(commands.Cog):
 
     @app_commands.command(name="help", description="Show all available commands.")
     async def help_cmd(self, interaction: discord.Interaction):
-        show_incense = await _can_see_incense(interaction)
+        gid = str(interaction.guild_id or "")
+        bot_name = get_bot_name(gid)
+        is_qt = gid == "1477887017034584248"
+        show_incense = is_qt and await _can_see_incense(interaction)
 
         embed = discord.Embed(
-            title="📖  King's Dex — Command Reference",
+            title=f"📖  {bot_name} — Command Reference",
             description=(
                 "Your all-in-one Pokémon companion for PvP, dex lookups and clan operations.\n"
                 "All slash commands support autocomplete — just start typing!"
@@ -127,7 +130,7 @@ class HelpCog(commands.Cog):
         # ── Incense Manager — shown to authorised users ──────────────────────
         if show_incense:
             embed.add_field(
-                name="🌿 Incense Manager  *(Incense Manager role required)*",
+                name="🌿 Mass Incense Manager  *(QTs server only)*",
                 value=(
                     "**Setup (admin only):**\n"
                     "`/incense setup role <role>`  — Set the incense manager role\n"
@@ -138,14 +141,14 @@ class HelpCog(commands.Cog):
                     "`!resume`  — Unlock all paused incense channels simultaneously\n"
                     "`!incset <id1> <id2> ...`  — Bulk register channels by ID\n\n"
                     "**Slash commands:**\n"
-                    "`/incense add <channel>`  — Register up to 5 channels at once\n"
-                    "`/incense remove <channel>`  — Unregister a channel\n"
+                    "`/incense add`  — Register channels (single, category, range, multi-cat)\n"
+                    "`/incense remove`  — Unregister channels (same flexible options)\n"
                     "`/incense lock [channel]`  — Lock a specific channel\n"
                     "`/incense unlock [channel]`  — Unlock a specific channel\n"
                     "`/incense recursive`  — Register a range of consecutive channels\n"
                     "`/incense status`  — See all channels: live / paused / idle\n"
                     "`/incense clear [channel]`  — Clear incense record\n"
-                    "`/incense log [user]`  — View audit log (admin only)\n\n"
+                    "`/incense log [user] [channel]`  — View audit log (admin only)\n\n"
                     "**Auto-behaviour:**\n"
                     "When Operation Dex activates an incense in a registered channel,\n"
                     "the channel is locked automatically and a notification is posted."
@@ -171,7 +174,7 @@ class HelpCog(commands.Cog):
                 "• `/pokemon` Battle Card → weaknesses, key stats, strongest moves at a glance\n"
                 "• `/pokemon_moves` type filter cycles through move types in one click\n"
                 "• `/sprite shiny:True` shows the shiny variant with a toggle button\n"
-                "• Checklists are **global** — your progress syncs across all servers"
+                "• Checklists are **per-user** — your collection is private, share via friends"
             ),
             inline=False,
         )

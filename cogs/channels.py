@@ -3,6 +3,7 @@ cogs/channels.py  —  /channel create · /channel delete
 Admin-only bulk channel creation / deletion with confirmation flows.
 """
 
+import asyncio
 import os
 
 import discord
@@ -13,6 +14,19 @@ from services.guild_settings_db import make_footer
 
 OWNER_ID = int(os.getenv("OWNER_ID", "145065060568530944"))
 MAX_CHANNELS = 50
+DISCORD_CATEGORY_LIMIT = 50
+
+
+async def _retry_api(coro_factory, retries: int = 3):
+    """Retry a Discord API call with exponential backoff on 503 / connection errors."""
+    for attempt in range(retries + 1):
+        try:
+            return await coro_factory()
+        except discord.HTTPException as e:
+            if e.status == 503 and attempt < retries:
+                await asyncio.sleep(1.5 * (attempt + 1))
+                continue
+            raise
 
 
 def _is_admin(interaction: discord.Interaction) -> bool:
@@ -68,10 +82,15 @@ class CreateConfirmView(discord.ui.View):
                 kwargs = {"name": name, "category": self.category}
                 if position is not None:
                     kwargs["position"] = position + i
-                ch = await interaction.guild.create_text_channel(**kwargs)
+                ch = await _retry_api(
+                    lambda kw=dict(kwargs): interaction.guild.create_text_channel(**kw)
+                )
                 created.append(ch)
             except Exception as e:
                 failed.append(f"{name}: {e}")
+            # Small delay to avoid rate limits on bulk operations
+            if (i + 1) % 5 == 0 and i + 1 < len(names):
+                await asyncio.sleep(1)
 
         embed = discord.Embed(
             title=f"{'✅' if created else '❌'}  Channels Created",
@@ -130,13 +149,18 @@ class DeleteConfirmView(discord.ui.View):
         deleted: list[str] = []
         failed:  list[str] = []
 
-        for ch in self.channels:
+        for i, ch in enumerate(self.channels):
             try:
                 name = ch.name
-                await ch.delete(reason=f"Bulk delete by {self.author}")
+                await _retry_api(
+                    lambda c=ch: c.delete(reason=f"Bulk delete by {self.author}")
+                )
                 deleted.append(name)
             except Exception as e:
                 failed.append(f"#{ch.name}: {e}")
+            # Small delay to avoid rate limits on bulk operations
+            if (i + 1) % 5 == 0 and i + 1 < len(self.channels):
+                await asyncio.sleep(1)
 
         embed = discord.Embed(
             title=f"{'🗑️' if deleted else '❌'}  Channels Deleted",
@@ -212,6 +236,32 @@ class ChannelsCog(commands.Cog):
 
         current_count = len(interaction.guild.channels)
 
+        # Validate: if category is set, check the 50-channel limit
+        if category:
+            existing_in_cat = len(category.channels)
+            available_slots = DISCORD_CATEGORY_LIMIT - existing_in_cat
+            if available_slots <= 0:
+                return await interaction.response.send_message(
+                    f"❌ **{category.name}** already has {existing_in_cat} channels "
+                    f"(Discord limit is {DISCORD_CATEGORY_LIMIT}). No more channels can be added.",
+                    ephemeral=True,
+                )
+            if count > available_slots:
+                return await interaction.response.send_message(
+                    f"⚠️ **{category.name}** has {existing_in_cat}/{DISCORD_CATEGORY_LIMIT} channels. "
+                    f"Only **{available_slots}** more can be added, but you requested **{count}**.\n\n"
+                    f"Please reduce the count to **{available_slots}** or fewer.",
+                    ephemeral=True,
+                )
+
+        # Validate: if after is set with a category, ensure after is in that category
+        if category and after and after.category_id != category.id:
+            return await interaction.response.send_message(
+                f"⚠️ The `after` channel ({after.mention}) is not in the `{category.name}` category. "
+                "Please pick a channel from the same category, or remove the `after` parameter.",
+                ephemeral=True,
+            )
+
         first_name = names[0]
         last_name  = names[-1]
         name_range = f"`{first_name}` through `{last_name}`" if count > 1 else f"`{first_name}`"
@@ -221,7 +271,7 @@ class ChannelsCog(commands.Cog):
             f"**Names:** {name_range}",
         ]
         if category:
-            desc_lines.append(f"**Category:** {category.name}")
+            desc_lines.append(f"**Category:** {category.name} ({len(category.channels)}/{DISCORD_CATEGORY_LIMIT} used)")
         if after:
             desc_lines.append(f"**After:** {after.mention}")
         desc_lines.append(f"\nThis server currently has **{current_count}** channels.")

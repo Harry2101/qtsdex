@@ -72,30 +72,44 @@ async def init_db():
 
 # ── Checklist bootstrap ───────────────────────────────────────────────────────
 
-async def ensure_checklist(guild_id: str, ctype: str, label: str = "") -> dict:
+async def ensure_checklist(owner_id: str, ctype: str, label: str = "") -> dict:
+    """Ensure a checklist exists for a specific user (owner_id = user ID)."""
     async with aiosqlite.connect(DB_PATH) as db:
         await db.execute(
             """INSERT INTO checklists (guild_id, checklist_type, label)
                VALUES (?, ?, ?)
                ON CONFLICT(guild_id, checklist_type) DO NOTHING""",
-            (guild_id, ctype, label),
+            (owner_id, ctype, label),
         )
         await db.commit()
         async with db.execute(
             "SELECT id, label FROM checklists WHERE guild_id=? AND checklist_type=?",
-            (guild_id, ctype),
+            (owner_id, ctype),
         ) as cur:
             row = await cur.fetchone()
             return {"id": row[0], "label": row[1]}
 
 
-async def rename_checklist(guild_id: str, ctype: str, new_label: str) -> None:
+async def rename_checklist(owner_id: str, ctype: str, new_label: str) -> None:
     async with aiosqlite.connect(DB_PATH) as db:
         await db.execute(
             "UPDATE checklists SET label=? WHERE guild_id=? AND checklist_type=?",
-            (new_label, guild_id, ctype),
+            (new_label, owner_id, ctype),
         )
         await db.commit()
+
+
+async def reset_all_collections() -> int:
+    """Delete ALL checklists, targets, and catches for every user. Returns count deleted."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        async with db.execute("SELECT COUNT(*) FROM checklists") as cur:
+            row = await cur.fetchone()
+            count = row[0] if row else 0
+        await db.execute("DELETE FROM user_catches")
+        await db.execute("DELETE FROM checklist_targets")
+        await db.execute("DELETE FROM checklists")
+        await db.commit()
+        return count
 
 
 # ── Targets ───────────────────────────────────────────────────────────────────
