@@ -7,7 +7,7 @@ import discord
 from discord import app_commands
 from discord.ext import commands
 
-from utils.embeds import FOOTER
+from services.guild_settings_db import make_footer, get_bot_name
 from utils.user_prefs import get as get_pref, set_pref
 
 STYLES: dict[str, str] = {
@@ -22,9 +22,11 @@ class SettingsCog(commands.Cog):
 
     @app_commands.command(
         name="settings",
-        description="Personalise how King's Dex displays Pokémon stats.",
+        description="Personalise how the bot displays Pokémon stats.",
     )
     async def settings_cmd(self, interaction: discord.Interaction):
+        gid = str(interaction.guild_id or "")
+        bot_name = get_bot_name(gid)
         # get() now sanitises old "tiers" → "numbers" automatically
         current = get_pref(interaction.user.id, "stat_style")
         # Extra guard in case value is somehow still invalid
@@ -32,24 +34,25 @@ class SettingsCog(commands.Cog):
             current = "numbers"
 
         embed = discord.Embed(
-            title="⚙️  King's Dex — Your Settings",
+            title=f"⚙️  {bot_name} — Your Settings",
             description=(
                 f"**Current stat style:** {STYLES[current]}\n\n"
                 "Pick a new style below — takes effect immediately on `/pokemon`."
             ),
             colour=0x5865F2,
         )
-        embed.set_footer(text="King's Dex  •  Settings persist across sessions")
+        embed.set_footer(text=make_footer(gid, "Settings persist across sessions"))
         await interaction.response.send_message(
             embed=embed,
-            view=SettingsView(interaction.user.id, current),
+            view=SettingsView(interaction.user.id, current, gid),
             ephemeral=True,
         )
 
 
 class SettingsView(discord.ui.View):
-    def __init__(self, user_id: int, current: str):
+    def __init__(self, user_id: int, current: str, guild_id: str = ""):
         super().__init__(timeout=60)
+        self.guild_id = guild_id
         for key, label in STYLES.items():
             btn = discord.ui.Button(
                 label=label,
@@ -70,7 +73,7 @@ class SettingsView(discord.ui.View):
                 ),
                 colour=0x57F287,
             )
-            embed.set_footer(text="King's Dex  •  Settings persist across sessions")
+            embed.set_footer(text=make_footer(self.guild_id, "Settings persist across sessions"))
             await interaction.response.edit_message(embed=embed, view=None)
         return cb
 

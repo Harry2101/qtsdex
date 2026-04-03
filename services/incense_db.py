@@ -242,20 +242,29 @@ async def log_action(
 
 
 async def get_audit_log(
-    guild_id: str, limit: int = 20, user_id: Optional[str] = None
+    guild_id: str,
+    limit: int = 20,
+    user_id: Optional[str] = None,
+    channel_id: Optional[str] = None,
 ) -> list[dict]:
-    """Get recent audit log entries."""
+    """Get recent audit log entries. Optional filter by user and/or channel (in details)."""
     async with aiosqlite.connect(DB_PATH) as db:
+        conditions = ["guild_id=?"]
+        params: list = [guild_id]
+
         if user_id:
-            sql = """SELECT user_id, action, details, created_at
-                     FROM audit_log WHERE guild_id=? AND user_id=?
-                     ORDER BY created_at DESC LIMIT ?"""
-            params = (guild_id, user_id, limit)
-        else:
-            sql = """SELECT user_id, action, details, created_at
-                     FROM audit_log WHERE guild_id=?
-                     ORDER BY created_at DESC LIMIT ?"""
-            params = (guild_id, limit)
+            conditions.append("user_id=?")
+            params.append(user_id)
+        if channel_id:
+            conditions.append("details LIKE ?")
+            params.append(f"%{channel_id}%")
+
+        params.append(limit)
+        where = " AND ".join(conditions)
+        sql = f"""SELECT user_id, action, details, created_at
+                  FROM audit_log WHERE {where}
+                  ORDER BY created_at DESC LIMIT ?"""
+
         async with db.execute(sql, params) as cur:
             rows = await cur.fetchall()
             return [
@@ -267,6 +276,54 @@ async def get_audit_log(
                 }
                 for r in rows
             ]
+
+
+async def bulk_add_channels(
+    guild_id: str, channel_ids: list[str], added_by: str = ""
+) -> tuple[list[str], list[str]]:
+    """Register multiple channels. Returns (added, already_existed) lists."""
+    added = []
+    already = []
+    async with _write_lock:
+        async with aiosqlite.connect(DB_PATH) as db:
+            for cid in channel_ids:
+                try:
+                    await db.execute(
+                        """INSERT INTO incense_channels (guild_id, channel_id, added_by)
+                           VALUES (?, ?, ?)""",
+                        (guild_id, cid, added_by),
+                    )
+                    added.append(cid)
+                except aiosqlite.IntegrityError:
+                    already.append(cid)
+            await db.commit()
+    return added, already
+
+
+async def bulk_remove_channels(
+    guild_id: str, channel_ids: list[str]
+) -> tuple[list[str], list[str]]:
+    """Unregister multiple channels. Returns (removed, not_found) lists."""
+    removed = []
+    not_found = []
+    async with _write_lock:
+        async with aiosqlite.connect(DB_PATH) as db:
+            for cid in channel_ids:
+                cur = await db.execute(
+                    "DELETE FROM incense_channels WHERE guild_id=? AND channel_id=?",
+                    (guild_id, cid),
+                )
+                if cur.rowcount > 0:
+                    removed.append(cid)
+                else:
+                    not_found.append(cid)
+                # Also clean up any active incense records
+                await db.execute(
+                    "DELETE FROM active_incenses WHERE guild_id=? AND channel_id=?",
+                    (guild_id, cid),
+                )
+            await db.commit()
+    return removed, not_found
 
 
 async def get_user_action_summary(guild_id: str) -> list[dict]:

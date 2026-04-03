@@ -8,7 +8,7 @@ from discord.ext import commands
 
 from utils import pokeapi
 from utils.autocomplete import move_ac
-from utils.embeds import FOOTER, error_embed, type_badge, type_colour, DAMAGE_CLASS_EMOJI
+from utils.embeds import error_embed, type_badge, type_colour, DAMAGE_CLASS_EMOJI, make_footer
 from utils.normalizer import normalize
 
 
@@ -28,9 +28,10 @@ class MoveLookupCog(commands.Cog):
                 embed=error_embed("Not Found", f"**{move}** wasn't found."), ephemeral=True
             )
 
-        await interaction.followup.send(embed=self._build(data))
+        gid = str(interaction.guild_id or "")
+        await interaction.followup.send(embed=self._build(data, gid))
 
-    def _build(self, data: dict) -> discord.Embed:
+    def _build(self, data: dict, guild_id: str = "") -> discord.Embed:
         name         = data["name"].replace("-", " ").title()
         move_type    = data["type"]["name"]
         dmg_class    = data["damage_class"]["name"]
@@ -86,8 +87,8 @@ class MoveLookupCog(commands.Cog):
         if flavor:
             embed.add_field(name="📜 Game Description", value=f"*{flavor[:300]}*", inline=False)
 
-        footer = f"King's Dex  •  Category: {category.title()}" if category else "King's Dex • powered by PokéAPI"
-        embed.set_footer(text=footer)
+        suffix = f"Category: {category.title()}" if category else "powered by PokéAPI"
+        embed.set_footer(text=make_footer(guild_id, suffix))
         return embed
 
 

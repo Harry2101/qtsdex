@@ -11,7 +11,7 @@ from discord.ext import commands
 
 from utils import pokeapi
 from utils.autocomplete import pokemon_ac, type_ac
-from utils.embeds import FOOTER, error_embed, type_colour, TYPE_EMOJI
+from utils.embeds import error_embed, type_colour, TYPE_EMOJI, make_footer
 from utils.normalizer import normalize
 from utils.type_chart import group_by_multiplier
 
@@ -96,7 +96,7 @@ class WeaknessCog(commands.Cog):
             if types_list:
                 embed.add_field(name=label_str, value=_fmt(types_list), inline=False)
 
-        embed.set_footer(text="King's Dex  •  Gen 6+ rules  •  powered by PokéAPI")
+        embed.set_footer(text=make_footer(str(interaction.guild_id or ""), "Gen 6+ rules  •  powered by PokéAPI"))
         await interaction.followup.send(embed=embed)
 
 
