@@ -207,17 +207,11 @@ class StarboardCog(commands.Cog):
         shiny_count = 0
         deleted_count = 0
         catches: list[tuple] = []  # (user_name, user_id, pokemon_name, message_id)
+        to_delete: list[discord.Message] = []
 
         async for msg in channel.history(limit=None, oldest_first=True):
             if msg.author.id != opdex_id:
-                try:
-                    await msg.delete()
-                    deleted_count += 1
-                    # small delay to avoid rate limits on bulk deletes
-                    if deleted_count % 5 == 0:
-                        await asyncio.sleep(1)
-                except (discord.Forbidden, discord.NotFound):
-                    pass
+                to_delete.append(msg)
                 continue
             # It's from the pokemon bot — check for shiny
             if msg.embeds and _is_shiny_embed(msg.embeds[0]):
@@ -226,6 +220,20 @@ class StarboardCog(commands.Cog):
                 uname, uid = _parse_catcher(embed)
                 pname = _parse_pokemon(embed)
                 catches.append((uname, uid, pname, str(msg.id)))
+
+        # Bulk-delete non-bot messages in batches of 100 (much faster)
+        for i in range(0, len(to_delete), 100):
+            batch = to_delete[i:i + 100]
+            try:
+                await channel.delete_messages(batch)
+            except discord.HTTPException:
+                # Fallback for messages older than 14 days (can't bulk-delete)
+                for msg in batch:
+                    try:
+                        await msg.delete()
+                    except (discord.Forbidden, discord.NotFound):
+                        pass
+            deleted_count += len(batch)
 
         # Phase 2: Save config
         existing = starboard_db.get_config(guild_id)
