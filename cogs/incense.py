@@ -215,18 +215,21 @@ def _auto_lock_embed(channel, incense_type, total_spawns, guild_id: str = "") ->
 # ── Confirmation views ───────────────────────────────────────────────────────
 
 class _IncenseAddConfirmView(discord.ui.View):
-    """5-second confirm for bulk incense add."""
+    """Confirm for bulk incense add."""
     def __init__(self, author: discord.User, channels: list[discord.TextChannel],
                  guild_id: str, user_id: str):
-        super().__init__(timeout=5)
+        super().__init__(timeout=15)
         self.author   = author
         self.channels = channels
         self.guild_id = guild_id
         self.user_id  = user_id
         self.confirmed = False
+        self._message: Optional[discord.InteractionMessage] = None
 
     async def on_timeout(self):
         if not self.confirmed:
+            for item in self.children:
+                item.disabled = True
             self.stop()
 
     @discord.ui.button(label="Confirm", style=discord.ButtonStyle.success, emoji="✅")
@@ -297,10 +300,10 @@ class _IncenseAddConfirmView(discord.ui.View):
 
 
 class _IncenseRemoveConfirmView(discord.ui.View):
-    """5-second confirm for bulk incense remove."""
+    """Confirm for bulk incense remove."""
     def __init__(self, author: discord.User, channels: list[discord.TextChannel],
                  guild_id: str, user_id: str):
-        super().__init__(timeout=5)
+        super().__init__(timeout=15)
         self.author   = author
         self.channels = channels
         self.guild_id = guild_id
@@ -309,6 +312,8 @@ class _IncenseRemoveConfirmView(discord.ui.View):
 
     async def on_timeout(self):
         if not self.confirmed:
+            for item in self.children:
+                item.disabled = True
             self.stop()
 
     @discord.ui.button(label="Remove", style=discord.ButtonStyle.danger, emoji="🗑️")
@@ -482,7 +487,7 @@ class IncenseCog(commands.Cog):
             guild_id, str(ctx.author.id), "mass_pause",
             f"Locked {len(locked)}, already {len(already)}, failed {len(failed)}, cleaned {len(cleaned)}"
         )
-        await ctx.send(embed=_pause_embed(locked, already, failed, cleaned))
+        await ctx.send(embed=_pause_embed(locked, already, failed, cleaned, guild_id))
 
     # ── !resume ───────────────────────────────────────────────────────────────
 
@@ -540,7 +545,7 @@ class IncenseCog(commands.Cog):
             guild_id, str(ctx.author.id), "mass_resume",
             f"Unlocked {len(unlocked)}, already {len(already)}, failed {len(failed)}, cleaned {len(cleaned)}"
         )
-        await ctx.send(embed=_resume_embed(unlocked, already, failed, cleaned))
+        await ctx.send(embed=_resume_embed(unlocked, already, failed, cleaned, guild_id))
 
     # ── !incset ───────────────────────────────────────────────────────────────
 
@@ -788,7 +793,7 @@ class IncenseCog(commands.Cog):
                 f"**{len(unique)}** channel{'s' if len(unique) != 1 else ''} will be registered:\n\n"
                 f"{preview}\n\n"
                 "Each channel will receive a setup notification.\n"
-                "*Click Confirm within 5 seconds.*"
+                "*Click Confirm within 15 seconds.*"
             ),
             colour=0xFEE75C,
         )
@@ -880,7 +885,7 @@ class IncenseCog(commands.Cog):
             description=(
                 f"**{len(unique)}** channel{'s' if len(unique) != 1 else ''} will be unregistered:\n\n"
                 f"{preview}\n\n"
-                "*Click Remove within 5 seconds.*"
+                "*Click Remove within 15 seconds.*"
             ),
             colour=0xED4245,
         )
