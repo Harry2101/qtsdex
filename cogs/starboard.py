@@ -441,6 +441,72 @@ class StarboardCog(commands.Cog):
         await interaction.followup.send(embed=embed)
 
 
+    @starboard.command(name="post", description="Manually post a top catcher announcement (admin only, for testing)")
+    @app_commands.describe(period="Week or month leaderboard to post")
+    @app_commands.choices(period=[
+        app_commands.Choice(name="Weekly", value="week"),
+        app_commands.Choice(name="Monthly", value="month"),
+    ])
+    async def sb_post(self, interaction: discord.Interaction, period: str = "week"):
+        if not _is_admin(interaction):
+            return await interaction.response.send_message("🚫 Admin only.", ephemeral=True)
+
+        guild_id = str(interaction.guild_id)
+        cfg = starboard_db.get_config(guild_id)
+        if not cfg or not cfg.get("announce_channel"):
+            return await interaction.response.send_message(
+                "⚠️ No announcement channel configured. Use `/starboard announcechannel` first.",
+                ephemeral=True,
+            )
+
+        announce_ch = interaction.guild.get_channel(int(cfg["announce_channel"]))
+        if not announce_ch:
+            return await interaction.response.send_message(
+                "⚠️ Announcement channel not found.", ephemeral=True,
+            )
+
+        label = "Weekly" if period == "week" else "Monthly"
+
+        class ConfirmView(discord.ui.View):
+            def __init__(self):
+                super().__init__(timeout=60)
+                self.confirmed = False
+
+            @discord.ui.button(label=f"Post {label} Announcement", style=discord.ButtonStyle.green)
+            async def confirm(self, btn_interaction: discord.Interaction, button: discord.ui.Button):
+                if not _is_admin(btn_interaction):
+                    return await btn_interaction.response.send_message("🚫 Admin only.", ephemeral=True)
+                self.confirmed = True
+                self.stop()
+                await btn_interaction.response.defer()
+
+            @discord.ui.button(label="Cancel", style=discord.ButtonStyle.grey)
+            async def cancel(self, btn_interaction: discord.Interaction, button: discord.ui.Button):
+                self.stop()
+                await btn_interaction.response.send_message("Cancelled.", ephemeral=True)
+
+        view = ConfirmView()
+        await interaction.response.send_message(
+            f"Post the **{label}** top catcher announcement to {announce_ch.mention}?",
+            view=view,
+            ephemeral=True,
+        )
+        await view.wait()
+
+        if not view.confirmed:
+            return
+
+        try:
+            await self._post_top_catcher(interaction.guild, guild_id, announce_ch, period)
+            await interaction.edit_original_response(
+                content=f"✅ {label} announcement posted in {announce_ch.mention}.", view=None,
+            )
+        except Exception as e:
+            log.error(f"Manual announcement failed for {interaction.guild.name}: {e}")
+            await interaction.edit_original_response(
+                content=f"❌ Failed to post announcement: {e}", view=None,
+            )
+
     @starboard.command(name="announcechannel", description="Set the channel for weekly & monthly top catcher announcements")
     @app_commands.describe(channel="Channel to post announcements in (omit to clear)")
     async def sb_announce_channel(self, interaction: discord.Interaction, channel: Optional[discord.TextChannel] = None):
