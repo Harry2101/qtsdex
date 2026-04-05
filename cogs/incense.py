@@ -286,7 +286,12 @@ class _IncenseAddConfirmView(discord.ui.View):
                 self.guild_id, self.user_id, "register",
                 f"Registered {len(added)} channel(s): {', '.join(ch.name for ch in added[:10])}"
             )
-        await interaction.edit_original_response(embed=embed, view=None)
+        # Dismiss the ephemeral prompt and post the result publicly
+        await interaction.edit_original_response(
+            embed=discord.Embed(title="✅ Done!", description="Result posted below.", colour=0x57F287),
+            view=None,
+        )
+        await interaction.channel.send(embed=embed)
 
     @discord.ui.button(label="Cancel", style=discord.ButtonStyle.secondary, emoji="✖️")
     async def cancel(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -349,7 +354,12 @@ class _IncenseRemoveConfirmView(discord.ui.View):
                 self.guild_id, self.user_id, "bulk_unregister",
                 f"Removed {len(removed)} channel(s): {', '.join(ch.name for ch in removed[:10])}"
             )
-        await interaction.edit_original_response(embed=embed, view=None)
+        # Dismiss the ephemeral prompt and post the result publicly
+        await interaction.edit_original_response(
+            embed=discord.Embed(title="✅ Done!", description="Result posted below.", colour=0x57F287),
+            view=None,
+        )
+        await interaction.channel.send(embed=embed)
 
     @discord.ui.button(label="Cancel", style=discord.ButtonStyle.secondary, emoji="✖️")
     async def cancel(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -1148,7 +1158,7 @@ class IncenseCog(commands.Cog):
                 guild_id, str(interaction.user.id), "recursive_register",
                 f"Registered {len(added)} channels recursively"
             )
-        await interaction.followup.send(embed=embed, ephemeral=True)
+        await interaction.followup.send(embed=embed)
 
     # ── /incense status ──────────────────────────────────────────────────────
 
@@ -1159,12 +1169,18 @@ class IncenseCog(commands.Cog):
         if not await _is_authorised(interaction):
             return await interaction.response.send_message("🚫 You need the **Incense Manager** role.", ephemeral=True)
 
-        await interaction.response.defer(thinking=True, ephemeral=True)
+        await interaction.response.defer(thinking=True)
 
         guild_id   = str(interaction.guild_id)
         opdex_id   = await _get_opdex_id(guild_id)
         registered = await incense_db.get_channels(guild_id)
         actives    = {r["channel_id"]: r for r in await incense_db.get_active_incenses(guild_id)}
+
+        # Auto-clean deleted channels silently
+        stale = [cid for cid in registered if not interaction.guild.get_channel(int(cid))]
+        for cid in stale:
+            await incense_db.remove_channel_and_incense(guild_id, cid)
+        registered = [cid for cid in registered if cid not in stale]
 
         if not registered:
             return await interaction.followup.send(
@@ -1172,8 +1188,7 @@ class IncenseCog(commands.Cog):
                     title="📊 Incense Status",
                     description="No incense channels registered yet.\nUse `!incset` or `/incense add` to register some.",
                     colour=0x5865F2,
-                ),
-                ephemeral=True,
+                )
             )
 
         live   = []
@@ -1181,17 +1196,16 @@ class IncenseCog(commands.Cog):
         idle   = []
 
         for cid in registered:
-            ch         = interaction.guild.get_channel(int(cid))
-            ch_mention = ch.mention if ch else f"`{cid}` *(deleted)*"
+            ch = interaction.guild.get_channel(int(cid))
             if cid in actives:
                 rec   = actives[cid]
-                label = f"{ch_mention} — {rec['incense_type']} ({rec['total_spawns']} spawns)"
-                if rec["paused"] or (ch and _is_channel_locked(ch, opdex_id)):
+                label = f"{ch.mention} — {rec['incense_type']} ({rec['total_spawns']} spawns)"
+                if rec["paused"] or _is_channel_locked(ch, opdex_id):
                     paused.append(label)
                 else:
                     live.append(label)
             else:
-                idle.append(ch_mention)
+                idle.append(ch.mention)
 
         embed = discord.Embed(title="📊 Incense Channel Status", colour=0x5865F2)
         embed.description = (
@@ -1199,6 +1213,7 @@ class IncenseCog(commands.Cog):
             f"**{len(live)}** live  •  "
             f"**{len(paused)}** paused  •  "
             f"**{len(idle)}** idle"
+            + (f"  •  🧹 {len(stale)} stale removed" if stale else "")
         )
         if live:
             embed.add_field(
@@ -1219,7 +1234,7 @@ class IncenseCog(commands.Cog):
                 inline=False,
             )
         embed.set_footer(text=make_footer(guild_id, "Incense Manager"))
-        await interaction.followup.send(embed=embed, ephemeral=True)
+        await interaction.followup.send(embed=embed)
 
     # ── /incense clear ───────────────────────────────────────────────────────
 
