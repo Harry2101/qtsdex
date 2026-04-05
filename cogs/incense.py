@@ -673,7 +673,7 @@ class IncenseCog(commands.Cog):
             colour=0x57F287,
         )
         embed.set_footer(text=make_footer(gid, "Incense Manager"))
-        await interaction.response.send_message(embed=embed)
+        await interaction.response.send_message(embed=embed, ephemeral=True)
 
     @setup_group.command(name="bot", description="Set which bot is the Operation Dex bot for auto-detection.")
     @app_commands.describe(bot_id="The bot's user ID (right-click the bot → Copy User ID)")
@@ -704,7 +704,7 @@ class IncenseCog(commands.Cog):
             colour=0x57F287,
         )
         embed.set_footer(text=make_footer(gid, "Incense Manager"))
-        await interaction.response.send_message(embed=embed)
+        await interaction.response.send_message(embed=embed, ephemeral=True)
 
     @setup_group.command(name="view", description="View the current incense configuration for this server.")
     async def setup_view(self, interaction: discord.Interaction):
@@ -963,7 +963,7 @@ class IncenseCog(commands.Cog):
                 colour=0xFF6B35,
             )
             embed.set_footer(text=make_footer(guild_id, "Incense Manager"))
-            await interaction.followup.send(embed=embed)
+            await interaction.followup.send(embed=embed, ephemeral=True)
         else:
             err_embed = discord.Embed(
                 title="❌ Lock Failed",
@@ -1018,7 +1018,7 @@ class IncenseCog(commands.Cog):
                 colour=0x57F287,
             )
             embed.set_footer(text=make_footer(guild_id, "Incense Manager"))
-            await interaction.followup.send(embed=embed)
+            await interaction.followup.send(embed=embed, ephemeral=True)
             if ch.id != interaction.channel_id:
                 try:
                     resume_embed = discord.Embed(
@@ -1148,7 +1148,7 @@ class IncenseCog(commands.Cog):
                 guild_id, str(interaction.user.id), "recursive_register",
                 f"Registered {len(added)} channels recursively"
             )
-        await interaction.followup.send(embed=embed)
+        await interaction.followup.send(embed=embed, ephemeral=True)
 
     # ── /incense status ──────────────────────────────────────────────────────
 
@@ -1159,7 +1159,7 @@ class IncenseCog(commands.Cog):
         if not await _is_authorised(interaction):
             return await interaction.response.send_message("🚫 You need the **Incense Manager** role.", ephemeral=True)
 
-        await interaction.response.defer(thinking=True)
+        await interaction.response.defer(thinking=True, ephemeral=True)
 
         guild_id   = str(interaction.guild_id)
         opdex_id   = await _get_opdex_id(guild_id)
@@ -1172,7 +1172,8 @@ class IncenseCog(commands.Cog):
                     title="📊 Incense Status",
                     description="No incense channels registered yet.\nUse `!incset` or `/incense add` to register some.",
                     colour=0x5865F2,
-                )
+                ),
+                ephemeral=True,
             )
 
         live   = []
@@ -1218,7 +1219,7 @@ class IncenseCog(commands.Cog):
                 inline=False,
             )
         embed.set_footer(text=make_footer(guild_id, "Incense Manager"))
-        await interaction.followup.send(embed=embed)
+        await interaction.followup.send(embed=embed, ephemeral=True)
 
     # ── /incense clear ───────────────────────────────────────────────────────
 
@@ -1249,7 +1250,8 @@ class IncenseCog(commands.Cog):
         )
         await interaction.response.send_message(
             f"🗑️ Incense record cleared for {ch.mention}. "
-            "It will register fresh on next activation."
+            "It will register fresh on next activation.",
+            ephemeral=True,
         )
 
     # ── /incense log ─────────────────────────────────────────────────────────
