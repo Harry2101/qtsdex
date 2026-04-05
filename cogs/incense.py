@@ -1198,43 +1198,59 @@ class IncenseCog(commands.Cog):
         for cid in registered:
             ch = interaction.guild.get_channel(int(cid))
             if cid in actives:
-                rec   = actives[cid]
-                label = f"{ch.mention} — {rec['incense_type']} ({rec['total_spawns']} spawns)"
+                rec = actives[cid]
+                spawns = rec["total_spawns"]
+                suffix = f" `{spawns}`" if spawns else ""
                 if rec["paused"] or _is_channel_locked(ch, opdex_id):
-                    paused.append(label)
+                    paused.append(f"{ch.mention}{suffix}")
                 else:
-                    live.append(label)
+                    live.append(f"{ch.mention}{suffix}")
             else:
                 idle.append(ch.mention)
 
+        def _chunk_field(entries: list[str], max_chars: int = 950) -> list[str]:
+            """Split a list of entries into field-sized chunks."""
+            chunks, current, length = [], [], 0
+            for e in entries:
+                line = e + "\n"
+                if length + len(line) > max_chars and current:
+                    chunks.append("".join(current).rstrip())
+                    current, length = [], 0
+                current.append(line)
+                length += len(line)
+            if current:
+                chunks.append("".join(current).rstrip())
+            return chunks or ["—"]
+
         embed = discord.Embed(title="📊 Incense Channel Status", colour=0x5865F2)
         embed.description = (
-            f"**{len(registered)}** registered  •  "
-            f"**{len(live)}** live  •  "
-            f"**{len(paused)}** paused  •  "
-            f"**{len(idle)}** idle"
-            + (f"  •  🧹 {len(stale)} stale removed" if stale else "")
+            f"> ▶️ **{len(live)}** live  •  "
+            f"⏸️ **{len(paused)}** paused  •  "
+            f"💤 **{len(idle)}** idle  •  "
+            f"📋 **{len(registered)}** total"
+            + (f"\n> 🧹 *{len(stale)} deleted channel(s) removed*" if stale else "")
         )
-        if live:
-            embed.add_field(
-                name=f"▶️ Live ({len(live)})",
-                value="\n".join(live[:15]) + (f"\n*+{len(live)-15} more*" if len(live) > 15 else ""),
-                inline=False,
-            )
-        if paused:
-            embed.add_field(
-                name=f"⏸️ Paused ({len(paused)})",
-                value="\n".join(paused[:15]) + (f"\n*+{len(paused)-15} more*" if len(paused) > 15 else ""),
-                inline=False,
-            )
-        if idle:
-            embed.add_field(
-                name=f"💤 Idle ({len(idle)})",
-                value="\n".join(idle[:15]) + (f"\n*+{len(idle)-15} more*" if len(idle) > 15 else ""),
-                inline=False,
-            )
-        embed.set_footer(text=make_footer(guild_id, "Incense Manager"))
-        await interaction.followup.send(embed=embed)
+
+        embeds = [embed]
+
+        def _add_fields(label_first: str, label_cont: str, chunks: list[str]):
+            for i, chunk in enumerate(chunks):
+                # Start a new embed if current one is full (Discord max 25 fields)
+                if len(embeds[-1].fields) >= 24:
+                    overflow = discord.Embed(colour=0x5865F2)
+                    embeds.append(overflow)
+                embeds[-1].add_field(
+                    name=label_first if i == 0 else label_cont,
+                    value=chunk,
+                    inline=True,
+                )
+
+        _add_fields(f"▶️ Live ({len(live)})", "▶️ Live (cont.)", _chunk_field(live))
+        _add_fields(f"⏸️ Paused ({len(paused)})", "⏸️ Paused (cont.)", _chunk_field(paused))
+        _add_fields(f"💤 Idle ({len(idle)})", "💤 Idle (cont.)", _chunk_field(idle))
+
+        embeds[-1].set_footer(text=make_footer(guild_id, "Incense Manager"))
+        await interaction.followup.send(embeds=embeds)
 
     # ── /incense clear ───────────────────────────────────────────────────────
 
