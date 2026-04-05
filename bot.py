@@ -31,6 +31,8 @@ COGS = [
     "cogs.item",
     "cogs.sprite",
     "cogs.events",
+    # ── Utilities ─────────────────────────────────────────────────────────────
+    "cogs.extract",
     # ── Incense Manager ───────────────────────────────────────────────────────
     "cogs.incense",
     "cogs.channels",
