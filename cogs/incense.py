@@ -812,7 +812,7 @@ class IncenseCog(commands.Cog):
         embed.add_field(name="🤖 Operation Dex Bot", value=f"`{opdex_id}`", inline=True)
         embed.add_field(name="📍 Registered Channels", value=str(num_channels), inline=True)
         embed.set_footer(text=make_footer(str(interaction.guild_id or ""), "Incense Manager"))
-        await interaction.response.send_message(embed=embed, ephemeral=True)
+        await interaction.response.send_message(embed=embed, ephemeral=False)
 
     # ── /incense add ─────────────────────────────────────────────────────────
 
