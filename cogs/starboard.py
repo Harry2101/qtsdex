@@ -253,9 +253,12 @@ class StarboardCog(commands.Cog):
         suffix = existing["suffix"] if existing else ""
         await starboard_db.set_config(guild_id, str(channel.id), prefix, suffix, shiny_count)
 
-        # Phase 3: Backfill catch records for leaderboard
+        # Phase 3: Backfill catch records for leaderboard (duplicates are skipped)
+        new_records = 0
         for uname, uid, pname, mid in catches:
-            await starboard_db.record_catch(guild_id, uname, uid, pname, mid)
+            row_id = await starboard_db.record_catch(guild_id, uname, uid, pname, mid)
+            if row_id:
+                new_records += 1
 
         # Phase 4: Rename channel
         cfg = starboard_db.get_config(guild_id)
@@ -271,7 +274,7 @@ class StarboardCog(commands.Cog):
                 f"✅ **Starboard initialised** in <#{channel.id}>\n"
                 f"• Cleaned **{deleted_count}** non-bot message(s)\n"
                 f"• Counted **{shiny_count}** existing shiny catch(es)\n"
-                f"• Backfilled **{len(catches)}** catch record(s) for leaderboard\n"
+                f"• Backfilled **{new_records}** new catch record(s) for leaderboard ({len(catches) - new_records} already tracked)\n"
                 f"{'• Channel name updated' if (prefix or suffix) else '• Set a format with `/starboard format` to update the channel name'}"
             ),
         )

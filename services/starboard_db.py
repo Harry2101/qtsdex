@@ -63,6 +63,24 @@ async def init_db():
         except Exception:
             pass  # Column already exists
 
+        # Deduplicate shiny_catches: keep earliest row per (guild_id, message_id)
+        await db.execute("""
+            DELETE FROM shiny_catches
+            WHERE id NOT IN (
+                SELECT MIN(id) FROM shiny_catches
+                WHERE message_id != ''
+                GROUP BY guild_id, message_id
+            ) AND message_id != ''
+        """)
+        await db.commit()
+
+        # Now safe to add unique index (duplicates are gone)
+        await db.execute("""
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_shiny_message
+                ON shiny_catches (guild_id, message_id)
+        """)
+        await db.commit()
+
         # Pre-load config cache
         async with db.execute("SELECT guild_id, channel_id, prefix, suffix, shiny_count, announce_channel FROM starboard_config") as cur:
             async for row in cur:
@@ -196,16 +214,16 @@ async def record_catch(
     pokemon_name: str,
     message_id: str,
 ) -> int:
-    """Record a shiny catch. Returns the new row ID."""
+    """Record a shiny catch. Skips duplicates (same guild + message). Returns the new row ID or 0 if duplicate."""
     async with _write_lock:
         async with aiosqlite.connect(DB_PATH) as db:
             cur = await db.execute(
-                """INSERT INTO shiny_catches (guild_id, user_name, user_id, pokemon_name, message_id)
+                """INSERT OR IGNORE INTO shiny_catches (guild_id, user_name, user_id, pokemon_name, message_id)
                    VALUES (?, ?, ?, ?, ?)""",
                 (guild_id, user_name, user_id, pokemon_name, message_id),
             )
             await db.commit()
-            return cur.lastrowid
+            return cur.lastrowid if cur.rowcount > 0 else 0
 
 
 async def get_leaderboard(guild_id: str, period: str = "all", limit: int = 10) -> list[tuple]:
