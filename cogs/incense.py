@@ -194,34 +194,93 @@ async def _check_and_lock_active_incense(
     return False
 
 
+# ── Channel list helpers ──────────────────────────────────────────────────────
+
+def _sort_channel_ids(guild: discord.Guild, ids: list[str]) -> list[str]:
+    """Return channel IDs sorted by their actual server position (category then channel)."""
+    def _pos(cid: str) -> tuple[int, int]:
+        ch = guild.get_channel(int(cid))
+        if ch is None:
+            return (99999, 99999)
+        cat_pos = ch.category.position if ch.category else -1
+        return (cat_pos, ch.position)
+    return sorted(ids, key=_pos)
+
+
+def _two_col_fields(
+    name: str,
+    mentions: list[str],
+    *,
+    per_col: int = 15,
+) -> list[tuple[str, str, bool]]:
+    """
+    Build (field_name, field_value, inline) tuples for a 2-column layout.
+
+    Up to `per_col` entries per column.  Returns at most 2 inline fields
+    (left col + right col) — enough for one "row" in Discord's 3-col grid.
+    Entries beyond 2×per_col are summarised as "+N more".
+    """
+    cap   = per_col * 2
+    shown = mentions[:cap]
+    extra = len(mentions) - cap
+
+    half  = (len(shown) + 1) // 2
+    left  = shown[:half]
+    right = shown[half:]
+
+    fields: list[tuple[str, str, bool]] = []
+    fields.append((name, "\n".join(left), True))
+    right_val = "\n".join(right) if right else "​"   # zero-width space keeps column alive
+    if extra > 0:
+        right_val = ("\n".join(right) + "\n" if right else "") + f"*+{extra} more…*"
+    fields.append(("​", right_val, True))           # blank name for right col
+    # Discord needs a non-inline spacer after two inline fields to avoid a
+    # lonely third column.  We use an invisible zero-width field.
+    fields.append(("​", "​", False))
+    return fields
+
+
+def _add_two_col(embed: discord.Embed, name: str, mentions: list[str], per_col: int = 15):
+    """Add a 2-column channel listing to an embed."""
+    for fname, fval, inline in _two_col_fields(name, mentions, per_col=per_col):
+        embed.add_field(name=fname, value=fval, inline=inline)
+
+
 # ── Embed helpers ─────────────────────────────────────────────────────────────
 
-def _pause_embed(locked, already, failed, cleaned, guild_id: str = "") -> discord.Embed:
+def _pause_embed(
+    locked, already, failed, cleaned,
+    guild_id: str = "",
+    guild: Optional[discord.Guild] = None,
+) -> discord.Embed:
     colour = 0xED4245 if failed else (0xFEE75C if already else 0xFF6B35)
     embed  = discord.Embed(title="⏸️  Mass Incense Paused", colour=colour)
-    embed.description = (
-        f"**{len(locked)}** incense channel{'s' if len(locked) != 1 else ''} "
-        f"locked and paused."
-    )
+
+    parts = []
     if locked:
-        embed.add_field(
-            name=f"🔒 Locked ({len(locked)})",
-            value="\n".join(f"<#{c}>" for c in locked[:20])
-                  + (f"\n*+{len(locked)-20} more*" if len(locked) > 20 else ""),
-            inline=True,
-        )
+        parts.append(f"🔒 **{len(locked)}** locked")
     if already:
-        embed.add_field(
-            name=f"⏭️ Already paused ({len(already)})",
-            value="\n".join(f"<#{c}>" for c in already[:10]),
-            inline=True,
-        )
+        parts.append(f"⏭️ **{len(already)}** already paused")
     if failed:
-        embed.add_field(
-            name=f"⚠️ Failed ({len(failed)})",
-            value="\n".join(f"<#{c}>" for c in failed[:10]),
-            inline=False,
-        )
+        parts.append(f"⚠️ **{len(failed)}** failed")
+    if cleaned:
+        parts.append(f"🧹 **{len(cleaned)}** cleaned up")
+    embed.description = "  •  ".join(parts) if parts else "Nothing to report."
+
+    if guild:
+        locked  = _sort_channel_ids(guild, locked)
+        already = _sort_channel_ids(guild, already)
+        failed  = _sort_channel_ids(guild, failed)
+
+    if locked:
+        _add_two_col(embed, f"🔒 Locked ({len(locked)})",
+                     [f"<#{c}>" for c in locked])
+    if already:
+        _add_two_col(embed, f"⏭️ Already paused ({len(already)})",
+                     [f"<#{c}>" for c in already])
+    if failed:
+        _add_two_col(embed, f"⚠️ Failed ({len(failed)})",
+                     [f"<#{c}>" for c in failed])
     if cleaned:
         embed.add_field(
             name=f"🧹 Cleaned up ({len(cleaned)})",
@@ -232,32 +291,39 @@ def _pause_embed(locked, already, failed, cleaned, guild_id: str = "") -> discor
     return embed
 
 
-def _resume_embed(unlocked, already, failed, cleaned, guild_id: str = "") -> discord.Embed:
+def _resume_embed(
+    unlocked, already, failed, cleaned,
+    guild_id: str = "",
+    guild: Optional[discord.Guild] = None,
+) -> discord.Embed:
     colour = 0xED4245 if failed else 0x57F287
     embed  = discord.Embed(title="▶️  Mass Incense Resumed", colour=colour)
-    embed.description = (
-        f"**{len(unlocked)}** incense channel{'s' if len(unlocked) != 1 else ''} "
-        f"unlocked and live."
-    )
+
+    parts = []
     if unlocked:
-        embed.add_field(
-            name=f"🔓 Resumed ({len(unlocked)})",
-            value="\n".join(f"<#{c}>" for c in unlocked[:20])
-                  + (f"\n*+{len(unlocked)-20} more*" if len(unlocked) > 20 else ""),
-            inline=True,
-        )
+        parts.append(f"🔓 **{len(unlocked)}** unlocked")
     if already:
-        embed.add_field(
-            name=f"⏭️ Already active ({len(already)})",
-            value="\n".join(f"<#{c}>" for c in already[:10]),
-            inline=True,
-        )
+        parts.append(f"⏭️ **{len(already)}** already live")
     if failed:
-        embed.add_field(
-            name=f"⚠️ Failed ({len(failed)})",
-            value="\n".join(f"<#{c}>" for c in failed[:10]),
-            inline=False,
-        )
+        parts.append(f"⚠️ **{len(failed)}** failed")
+    if cleaned:
+        parts.append(f"🧹 **{len(cleaned)}** cleaned up")
+    embed.description = "  •  ".join(parts) if parts else "Nothing to report."
+
+    if guild:
+        unlocked = _sort_channel_ids(guild, unlocked)
+        already  = _sort_channel_ids(guild, already)
+        failed   = _sort_channel_ids(guild, failed)
+
+    if unlocked:
+        _add_two_col(embed, f"🔓 Resumed ({len(unlocked)})",
+                     [f"<#{c}>" for c in unlocked])
+    if already:
+        _add_two_col(embed, f"⏭️ Already active ({len(already)})",
+                     [f"<#{c}>" for c in already])
+    if failed:
+        _add_two_col(embed, f"⚠️ Failed ({len(failed)})",
+                     [f"<#{c}>" for c in failed])
     if cleaned:
         embed.add_field(
             name=f"🧹 Cleaned up ({len(cleaned)})",
@@ -387,6 +453,130 @@ class _IncenseAddConfirmView(discord.ui.View):
             embed=discord.Embed(title="❌ Cancelled", description="No channels were registered.", colour=0xED4245),
             view=None,
         )
+
+
+class _StatusPaginatorView(discord.ui.View):
+    """
+    Paginated viewer for /incense status.
+
+    Each page shows up to CHANNELS_PER_PAGE channels in a 2-column layout,
+    grouped by state (live / paused / idle) in server order.
+    """
+
+    CHANNELS_PER_PAGE = 30   # 15 per column × 2
+
+    def __init__(
+        self,
+        author_id: int,
+        guild: discord.Guild,
+        live: list[str],
+        paused: list[str],
+        idle: list[str],
+        stale_count: int,
+        guild_id: str,
+    ):
+        super().__init__(timeout=120)
+        self.author_id   = author_id
+        self.guild       = guild
+        self.guild_id    = guild_id
+        self.stale_count = stale_count
+
+        # All entries in order: (channel_id, state)
+        self._entries: list[tuple[str, str]] = (
+            [(cid, "live")   for cid in live]
+            + [(cid, "paused") for cid in paused]
+            + [(cid, "idle")   for cid in idle]
+        )
+        self._total   = len(self._entries)
+        self._n_pages = max(1, -(-self._total // self.CHANNELS_PER_PAGE))  # ceil div
+        self._page    = 0
+
+        self._summary = (
+            f"▶️ **{len(live)}** live  •  "
+            f"⏸️ **{len(paused)}** paused  •  "
+            f"💤 **{len(idle)}** idle  •  "
+            f"📋 **{self._total}** total"
+            + (f"\n> 🧹 *{stale_count} deleted channel(s) removed*" if stale_count else "")
+        )
+        self._update_buttons()
+
+    # ── helpers ───────────────────────────────────────────────────────────────
+
+    def _update_buttons(self):
+        self.btn_prev.disabled = (self._page == 0)
+        self.btn_next.disabled = (self._page >= self._n_pages - 1)
+        self.btn_page.label    = f"Page {self._page + 1} / {self._n_pages}"
+
+    def _build_embed(self) -> discord.Embed:
+        start = self._page * self.CHANNELS_PER_PAGE
+        end   = start + self.CHANNELS_PER_PAGE
+        slice_ = self._entries[start:end]
+
+        # Group this page's entries by state
+        by_state: dict[str, list[str]] = {"live": [], "paused": [], "idle": []}
+        for cid, state in slice_:
+            by_state[state].append(cid)
+
+        STATE_ICON = {"live": "▶️", "paused": "⏸️", "idle": "💤"}
+        STATE_LABEL = {"live": "Live", "paused": "Paused", "idle": "Idle"}
+
+        embed = discord.Embed(title="📊 Incense Channel Status", colour=0x5865F2)
+        embed.description = f"> {self._summary}"
+
+        for state in ("live", "paused", "idle"):
+            cids = by_state[state]
+            if not cids:
+                continue
+            mentions = [f"<#{c}>" for c in cids]
+            icon     = STATE_ICON[state]
+            label    = STATE_LABEL[state]
+            half     = (len(mentions) + 1) // 2
+            left     = mentions[:half]
+            right    = mentions[half:]
+
+            embed.add_field(
+                name=f"{icon} {label} ({len(cids)})",
+                value="\n".join(left),
+                inline=True,
+            )
+            embed.add_field(
+                name="​",
+                value="\n".join(right) if right else "​",
+                inline=True,
+            )
+            embed.add_field(name="​", value="​", inline=False)  # row break
+
+        embed.set_footer(
+            text=make_footer(self.guild_id, f"Incense Manager  •  Page {self._page + 1}/{self._n_pages}")
+        )
+        return embed
+
+    # ── buttons ───────────────────────────────────────────────────────────────
+
+    @discord.ui.button(emoji="⬅️", style=discord.ButtonStyle.secondary, custom_id="status_prev")
+    async def btn_prev(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if interaction.user.id != self.author_id:
+            return await interaction.response.send_message("Not your panel.", ephemeral=True)
+        self._page -= 1
+        self._update_buttons()
+        await interaction.response.edit_message(embed=self._build_embed(), view=self)
+
+    @discord.ui.button(label="Page 1 / 1", style=discord.ButtonStyle.primary, disabled=True, custom_id="status_page")
+    async def btn_page(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.defer()
+
+    @discord.ui.button(emoji="➡️", style=discord.ButtonStyle.secondary, custom_id="status_next")
+    async def btn_next(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if interaction.user.id != self.author_id:
+            return await interaction.response.send_message("Not your panel.", ephemeral=True)
+        self._page += 1
+        self._update_buttons()
+        await interaction.response.edit_message(embed=self._build_embed(), view=self)
+
+    async def on_timeout(self):
+        for item in self.children:
+            item.disabled = True
+        self.stop()
 
 
 class _IncenseRemoveConfirmView(discord.ui.View):
@@ -576,7 +766,7 @@ class IncenseCog(commands.Cog):
             guild_id, str(ctx.author.id), "mass_pause",
             f"Locked {len(locked)}, already {len(already)}, failed {len(failed)}, cleaned {len(cleaned)}"
         )
-        await ctx.send(embed=_pause_embed(locked, already, failed, cleaned, guild_id))
+        await ctx.send(embed=_pause_embed(locked, already, failed, cleaned, guild_id, ctx.guild))
 
     # ── !resume ───────────────────────────────────────────────────────────────
 
@@ -643,7 +833,7 @@ class IncenseCog(commands.Cog):
             guild_id, str(ctx.author.id), "mass_resume",
             f"Unlocked {len(unlocked)}, already {len(already)}, failed {len(failed)}, cleaned {len(cleaned)}"
         )
-        await ctx.send(embed=_resume_embed(unlocked, already, failed, cleaned, guild_id))
+        await ctx.send(embed=_resume_embed(unlocked, already, failed, cleaned, guild_id, ctx.guild))
 
     # ── !incset ───────────────────────────────────────────────────────────────
 
@@ -1279,66 +1469,44 @@ class IncenseCog(commands.Cog):
                 )
             )
 
-        live   = []
-        paused = []
-        idle   = []
+        # Sort registered channels by actual server position
+        def _ch_pos(cid: str) -> tuple[int, int]:
+            ch = interaction.guild.get_channel(int(cid))
+            if ch is None:
+                return (99999, 99999)
+            return (ch.category.position if ch.category else -1, ch.position)
+
+        registered = sorted(registered, key=_ch_pos)
+
+        live_ids   = []
+        paused_ids = []
+        idle_ids   = []
 
         for cid in registered:
             ch = interaction.guild.get_channel(int(cid))
             if cid in actives:
                 rec = actives[cid]
-                spawns = rec["total_spawns"]
-                suffix = f" `{spawns}`" if spawns else ""
                 if rec["paused"] or _is_channel_locked(ch, opdex_id):
-                    paused.append(f"{ch.mention}{suffix}")
+                    paused_ids.append(cid)
                 else:
-                    live.append(f"{ch.mention}{suffix}")
+                    live_ids.append(cid)
             else:
-                idle.append(ch.mention)
+                idle_ids.append(cid)
 
-        def _chunk_field(entries: list[str], max_chars: int = 950) -> list[str]:
-            """Split a list of entries into field-sized chunks."""
-            chunks, current, length = [], [], 0
-            for e in entries:
-                line = e + "\n"
-                if length + len(line) > max_chars and current:
-                    chunks.append("".join(current).rstrip())
-                    current, length = [], 0
-                current.append(line)
-                length += len(line)
-            if current:
-                chunks.append("".join(current).rstrip())
-            return chunks or ["—"]
-
-        embed = discord.Embed(title="📊 Incense Channel Status", colour=0x5865F2)
-        embed.description = (
-            f"> ▶️ **{len(live)}** live  •  "
-            f"⏸️ **{len(paused)}** paused  •  "
-            f"💤 **{len(idle)}** idle  •  "
-            f"📋 **{len(registered)}** total"
-            + (f"\n> 🧹 *{len(stale)} deleted channel(s) removed*" if stale else "")
+        view = _StatusPaginatorView(
+            author_id   = interaction.user.id,
+            guild       = interaction.guild,
+            live        = live_ids,
+            paused      = paused_ids,
+            idle        = idle_ids,
+            stale_count = len(stale),
+            guild_id    = guild_id,
         )
-
-        embeds = [embed]
-
-        def _add_fields(label_first: str, label_cont: str, chunks: list[str]):
-            for i, chunk in enumerate(chunks):
-                # Start a new embed if current one is full (Discord max 25 fields)
-                if len(embeds[-1].fields) >= 24:
-                    overflow = discord.Embed(colour=0x5865F2)
-                    embeds.append(overflow)
-                embeds[-1].add_field(
-                    name=label_first if i == 0 else label_cont,
-                    value=chunk,
-                    inline=True,
-                )
-
-        _add_fields(f"▶️ Live ({len(live)})", "▶️ Live (cont.)", _chunk_field(live))
-        _add_fields(f"⏸️ Paused ({len(paused)})", "⏸️ Paused (cont.)", _chunk_field(paused))
-        _add_fields(f"💤 Idle ({len(idle)})", "💤 Idle (cont.)", _chunk_field(idle))
-
-        embeds[-1].set_footer(text=make_footer(guild_id, "Incense Manager"))
-        await interaction.followup.send(embeds=embeds)
+        # Only attach the view if there's more than one page
+        kwargs = {"embed": view._build_embed()}
+        if view._n_pages > 1:
+            kwargs["view"] = view
+        await interaction.followup.send(**kwargs)
 
     # ── /incense clear ───────────────────────────────────────────────────────
 
