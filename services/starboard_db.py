@@ -30,11 +30,12 @@ async def init_db():
             PRAGMA journal_mode = WAL;
 
             CREATE TABLE IF NOT EXISTS starboard_config (
-                guild_id      TEXT PRIMARY KEY,
-                channel_id    TEXT NOT NULL,
-                prefix        TEXT NOT NULL DEFAULT '',
-                suffix        TEXT NOT NULL DEFAULT '',
-                shiny_count   INTEGER NOT NULL DEFAULT 0
+                guild_id         TEXT PRIMARY KEY,
+                channel_id       TEXT NOT NULL,
+                prefix           TEXT NOT NULL DEFAULT '',
+                suffix           TEXT NOT NULL DEFAULT '',
+                shiny_count      INTEGER NOT NULL DEFAULT 0,
+                announce_channel TEXT NOT NULL DEFAULT ''
             );
 
             CREATE TABLE IF NOT EXISTS shiny_catches (
@@ -55,14 +56,22 @@ async def init_db():
                 ON shiny_catches (guild_id, user_id);
         """)
         await db.commit()
+        # Add announce_channel column if upgrading from older schema
+        try:
+            await db.execute("ALTER TABLE starboard_config ADD COLUMN announce_channel TEXT NOT NULL DEFAULT ''")
+            await db.commit()
+        except Exception:
+            pass  # Column already exists
+
         # Pre-load config cache
-        async with db.execute("SELECT guild_id, channel_id, prefix, suffix, shiny_count FROM starboard_config") as cur:
+        async with db.execute("SELECT guild_id, channel_id, prefix, suffix, shiny_count, announce_channel FROM starboard_config") as cur:
             async for row in cur:
                 _config_cache[row[0]] = {
                     "channel_id": row[1],
                     "prefix": row[2],
                     "suffix": row[3],
                     "shiny_count": row[4],
+                    "announce_channel": row[5] or "",
                 }
 
 
@@ -75,17 +84,19 @@ def get_config(guild_id: str) -> Optional[dict]:
 
 async def set_config(guild_id: str, channel_id: str, prefix: str = "", suffix: str = "", shiny_count: int = 0) -> None:
     """Set or update starboard config for a guild."""
+    existing = _config_cache.get(guild_id, {})
+    announce_channel = existing.get("announce_channel", "")
     async with _write_lock:
         async with aiosqlite.connect(DB_PATH) as db:
             await db.execute(
-                """INSERT INTO starboard_config (guild_id, channel_id, prefix, suffix, shiny_count)
-                   VALUES (?, ?, ?, ?, ?)
+                """INSERT INTO starboard_config (guild_id, channel_id, prefix, suffix, shiny_count, announce_channel)
+                   VALUES (?, ?, ?, ?, ?, ?)
                    ON CONFLICT(guild_id) DO UPDATE SET
                        channel_id=excluded.channel_id,
                        prefix=excluded.prefix,
                        suffix=excluded.suffix,
                        shiny_count=excluded.shiny_count""",
-                (guild_id, channel_id, prefix, suffix, shiny_count),
+                (guild_id, channel_id, prefix, suffix, shiny_count, announce_channel),
             )
             await db.commit()
     _config_cache[guild_id] = {
@@ -93,6 +104,7 @@ async def set_config(guild_id: str, channel_id: str, prefix: str = "", suffix: s
         "prefix": prefix,
         "suffix": suffix,
         "shiny_count": shiny_count,
+        "announce_channel": announce_channel,
     }
 
 
@@ -144,6 +156,22 @@ async def increment_shiny_count(guild_id: str) -> int:
             await db.commit()
     cfg["shiny_count"] = new_count
     return new_count
+
+
+async def set_announce_channel(guild_id: str, channel_id: str) -> bool:
+    """Set the announcement channel for weekly/monthly top catcher posts. Returns False if no config."""
+    cfg = _config_cache.get(guild_id)
+    if not cfg:
+        return False
+    async with _write_lock:
+        async with aiosqlite.connect(DB_PATH) as db:
+            await db.execute(
+                "UPDATE starboard_config SET announce_channel=? WHERE guild_id=?",
+                (channel_id, guild_id),
+            )
+            await db.commit()
+    cfg["announce_channel"] = channel_id
+    return True
 
 
 async def remove_config(guild_id: str) -> bool:

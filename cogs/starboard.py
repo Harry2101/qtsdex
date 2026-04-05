@@ -6,22 +6,27 @@ designated starboard channel, and keeps the channel name updated
 with the running shiny count.
 
 Slash commands (grouped under /starboard, admin-only):
-  /starboard init       — set a channel as the starboard; cleans non-bot messages & counts existing shinies
-  /starboard format     — set channel name prefix/suffix (e.g. prefix="✨" suffix="✨")
-  /starboard count      — view current shiny count
-  /starboard setcount   — manually override the shiny count (admin/owner only)
-  /starboard remove     — unlink the starboard channel
+  /starboard init            — set a channel as the starboard; cleans non-bot messages & counts existing shinies
+  /starboard format          — set channel name prefix/suffix (e.g. prefix="✨" suffix="✨")
+  /starboard count           — view current shiny count
+  /starboard setcount        — manually override the shiny count (admin/owner only)
+  /starboard remove          — unlink the starboard channel
+  /starboard announcechannel — set channel for weekly/monthly top catcher announcements
 
 Auto-behaviour:
   When the Operation Dex bot posts a shiny catch embed in the starboard channel,
   the count is incremented and the channel name is updated (batched every 5 minutes
   to respect Discord rate limits on channel edits — 2 per 10 min).
+  Weekly (Monday 00:00 UTC) and monthly (1st of month 00:00 UTC) top catcher
+  announcements are posted to the configured announce channel.
 """
 
 import asyncio
 import logging
 import os
+import random
 import re
+from datetime import datetime, timezone
 from typing import Optional
 
 import discord
@@ -103,9 +108,11 @@ class StarboardCog(commands.Cog):
 
     async def cog_load(self):
         self._rename_loop.start()
+        self._announcement_loop.start()
 
     async def cog_unload(self):
         self._rename_loop.cancel()
+        self._announcement_loop.cancel()
 
     # ── Batched channel rename (every 5 min) ─────────────────────────────────
 
@@ -169,14 +176,19 @@ class StarboardCog(commands.Cog):
         user_name, user_id = _parse_catcher(embed)
         pokemon_name = _parse_pokemon(embed)
 
-        new_count = await starboard_db.increment_shiny_count(guild_id)
-        await starboard_db.record_catch(
-            guild_id=guild_id,
-            user_name=user_name,
-            user_id=user_id,
-            pokemon_name=pokemon_name,
-            message_id=str(message.id),
-        )
+        try:
+            new_count = await starboard_db.increment_shiny_count(guild_id)
+            await starboard_db.record_catch(
+                guild_id=guild_id,
+                user_name=user_name,
+                user_id=user_id,
+                pokemon_name=pokemon_name,
+                message_id=str(message.id),
+            )
+        except Exception as e:
+            log.error(f"Failed to record shiny catch in {message.guild.name}: {e}")
+            return
+
         log.info(
             f"Shiny #{new_count} in {message.guild.name}: "
             f"{pokemon_name} caught by {user_name} ({user_id})"
@@ -367,7 +379,7 @@ class StarboardCog(commands.Cog):
 
     # ── Leaderboard command ──────────────────────────────────────────────────
 
-    @starboard.command(name="leaderboard", description="Show top shiny catchers")
+    @starboard.command(name="leaderboard", description="Show top ✨ catchers")
     @app_commands.describe(period="Time period: week, month, year, or all")
     @app_commands.choices(period=[
         app_commands.Choice(name="This week", value="week"),
@@ -380,33 +392,177 @@ class StarboardCog(commands.Cog):
         cfg = starboard_db.get_config(guild_id)
         if not cfg:
             return await interaction.response.send_message(
-                "⚠️ No starboard configured.", ephemeral=True,
+                "⚠️ No starboard configured. Use `/starboard init` first.", ephemeral=True,
             )
 
-        rows = await starboard_db.get_leaderboard(guild_id, period, limit=15)
-        if not rows:
-            return await interaction.response.send_message(
-                f"No shiny catches recorded for **{period}**.", ephemeral=True,
+        await interaction.response.defer()
+
+        try:
+            rows = await starboard_db.get_leaderboard(guild_id, period, limit=15)
+            total = await starboard_db.get_catch_count(guild_id, period)
+        except Exception as e:
+            log.error(f"Leaderboard fetch failed for {guild_id}: {e}")
+            return await interaction.followup.send(
+                "❌ Failed to fetch leaderboard data. Please try again.", ephemeral=True,
             )
 
         period_labels = {"week": "This Week", "month": "This Month", "year": "This Year", "all": "All Time"}
-        title = f"✨ Shiny Leaderboard — {period_labels.get(period, period)}"
+        period_label = period_labels.get(period, period)
+
+        if not rows:
+            return await interaction.followup.send(
+                embed=discord.Embed(
+                    title=f"✨ Leaderboard — {period_label}",
+                    description=f"No ✨ catches recorded for **{period_label}** yet.\nGet out there and catch some! 🎯",
+                    color=0xFFD700,
+                )
+            )
+
+        title = f"✨ Top Trainers — {period_label}"
 
         lines = []
         medals = ["🥇", "🥈", "🥉"]
+        rank_emojis = ["4️⃣", "5️⃣", "6️⃣", "7️⃣", "8️⃣", "9️⃣", "🔟"]
         for i, (uname, uid, cnt) in enumerate(rows):
-            rank = medals[i] if i < 3 else f"`{i+1}.`"
-            display = f"<@{uid}>" if uid else uname or "Unknown"
-            lines.append(f"{rank} {display} — **{cnt}** shiny{'s' if cnt != 1 else ''}")
+            rank = medals[i] if i < 3 else (rank_emojis[i - 3] if i - 3 < len(rank_emojis) else f"`{i+1}.`")
+            display = f"<@{uid}>" if uid else uname or "Unknown Trainer"
+            catch_str = f"**{cnt}** ✨" if cnt != 1 else f"**{cnt}** ✨"
+            lines.append(f"{rank} {display} — {catch_str}")
 
-        total = await starboard_db.get_catch_count(guild_id, period)
         embed = discord.Embed(
             title=title,
             description="\n".join(lines),
             color=0xFFD700,
         )
-        embed.set_footer(text=f"Total: {total} shinies")
-        await interaction.response.send_message(embed=embed)
+        embed.set_footer(text=f"✨ {total} total caught {period_label.lower()} • Keep hunting, trainers! 🎯")
+        await interaction.followup.send(embed=embed)
+
+
+    @starboard.command(name="announcechannel", description="Set the channel for weekly & monthly top catcher announcements")
+    @app_commands.describe(channel="Channel to post announcements in (omit to clear)")
+    async def sb_announce_channel(self, interaction: discord.Interaction, channel: Optional[discord.TextChannel] = None):
+        if not _is_admin(interaction):
+            return await interaction.response.send_message("🚫 Admin only.", ephemeral=True)
+
+        guild_id = str(interaction.guild_id)
+        cfg = starboard_db.get_config(guild_id)
+        if not cfg:
+            return await interaction.response.send_message(
+                "⚠️ No starboard configured. Use `/starboard init` first.", ephemeral=True,
+            )
+
+        if channel is None:
+            ok = await starboard_db.set_announce_channel(guild_id, "")
+            if not ok:
+                return await interaction.response.send_message("⚠️ No starboard configured.", ephemeral=True)
+            return await interaction.response.send_message(
+                "✅ Announcement channel cleared. Weekly/monthly announcements disabled.", ephemeral=True,
+            )
+
+        ok = await starboard_db.set_announce_channel(guild_id, str(channel.id))
+        if not ok:
+            return await interaction.response.send_message("⚠️ No starboard configured.", ephemeral=True)
+        await interaction.response.send_message(
+            f"✅ Announcements will now be posted in {channel.mention}!\n"
+            f"📅 Weekly top catcher: every **Monday**\n"
+            f"🗓️ Monthly top catcher: first day of each **month**",
+            ephemeral=True,
+        )
+
+    # ── Weekly / Monthly announcement scheduler ──────────────────────────────
+
+    @tasks.loop(minutes=30)
+    async def _announcement_loop(self):
+        """Check if it's time to post weekly or monthly top catcher announcements."""
+        now = datetime.now(timezone.utc)
+        is_weekly = now.weekday() == 0 and now.hour == 0 and now.minute < 30   # Monday 00:00–00:30
+        is_monthly = now.day == 1 and now.hour == 0 and now.minute < 30        # 1st of month 00:00–00:30
+
+        if not is_weekly and not is_monthly:
+            return
+
+        for guild in self.bot.guilds:
+            guild_id = str(guild.id)
+            cfg = starboard_db.get_config(guild_id)
+            if not cfg or not cfg.get("announce_channel"):
+                continue
+
+            announce_ch = guild.get_channel(int(cfg["announce_channel"]))
+            if not announce_ch:
+                continue
+
+            try:
+                if is_weekly:
+                    await self._post_top_catcher(guild, guild_id, announce_ch, "week")
+                if is_monthly:
+                    await self._post_top_catcher(guild, guild_id, announce_ch, "month")
+            except Exception as e:
+                log.error(f"Announcement failed for {guild.name}: {e}")
+
+    @_announcement_loop.before_loop
+    async def _before_announcement_loop(self):
+        await self.bot.wait_until_ready()
+
+    async def _post_top_catcher(
+        self,
+        guild: discord.Guild,
+        guild_id: str,
+        channel: discord.TextChannel,
+        period: str,
+    ):
+        rows = await starboard_db.get_leaderboard(guild_id, period, limit=3)
+        total = await starboard_db.get_catch_count(guild_id, period)
+
+        if not rows or total == 0:
+            return  # Nothing to announce
+
+        top_uname, top_uid, top_cnt = rows[0]
+        top_display = f"<@{top_uid}>" if top_uid else (top_uname or "Unknown Trainer")
+
+        if period == "week":
+            title = "🏆 Weekly ✨ Champion!"
+            period_label = "this week"
+            colour = 0xF4D03F
+            trophy_line = f"🎖️ **{top_display}** dominated the hunt with **{top_cnt}** ✨ this week!"
+            hype_lines = [
+                "What an incredible week of hunting! 🔥",
+                "The stars aligned for our champion! 🌟",
+                "Can anyone dethrone the champ next week? 👀",
+            ]
+        else:
+            title = "👑 Monthly ✨ Legend!"
+            period_label = "this month"
+            colour = 0xE74C3C
+            trophy_line = f"🏅 **{top_display}** reigned supreme with **{top_cnt}** ✨ this month!"
+            hype_lines = [
+                "A legendary performance — bow down! 🙇",
+                "The shiny gods smile upon them! ✨",
+                "New month, new competition — who's hungry? 🍽️",
+            ]
+
+        lines = [trophy_line, ""]
+        if len(rows) > 1:
+            lines.append("**Runner-ups:**")
+            medals = ["🥈", "🥉"]
+            for i, (uname, uid, cnt) in enumerate(rows[1:3]):
+                display = f"<@{uid}>" if uid else (uname or "Unknown Trainer")
+                lines.append(f"{medals[i]} {display} — **{cnt}** ✨")
+            lines.append("")
+
+        lines.append(random.choice(hype_lines))
+
+        embed = discord.Embed(
+            title=title,
+            description="\n".join(lines),
+            color=colour,
+        )
+        embed.set_footer(text=f"✨ {total} total caught {period_label} across all hunters • Keep going! 🎯")
+
+        await channel.send(
+            f"📢 **{title}** — Congratulations to {top_display}! 🎉",
+            embed=embed,
+        )
+        log.info(f"Posted {period} announcement in #{channel.name} for {guild.name}")
 
 
 async def setup(bot: commands.Bot):

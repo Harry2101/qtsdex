@@ -431,10 +431,22 @@ class IncenseCog(commands.Cog):
                 f"Auto-locked #{message.channel.name} ({incense_type}, {total_spawns} spawns)"
             )
         else:
-            await message.channel.send(
-                "⚠️ Incense detected but I couldn't lock this channel — "
-                "please check my permissions."
+            log.warning(f"Auto-lock failed for #{message.channel.name} in {message.guild.name}")
+            err_embed = discord.Embed(
+                title="⚠️ Auto-Lock Failed",
+                description=(
+                    f"A **{incense_type} Incense** was detected in {message.channel.mention}, "
+                    f"but I couldn't lock the channel.\n\n"
+                    f"**Please check my permissions** (Manage Channel / Manage Roles) "
+                    f"and manually pause if needed."
+                ),
+                colour=0xED4245,
             )
+            err_embed.set_footer(text=make_footer(guild_id, "Incense Manager"))
+            try:
+                await message.channel.send(embed=err_embed)
+            except discord.Forbidden:
+                log.error(f"Cannot send auto-lock failure message in #{message.channel.name}")
 
     # ── !pause ────────────────────────────────────────────────────────────────
 
@@ -454,8 +466,14 @@ class IncenseCog(commands.Cog):
 
         if not actives:
             return await ctx.send(
-                "ℹ️ No active incenses found. "
-                "Channels lock automatically when incenses are activated."
+                embed=discord.Embed(
+                    title="ℹ️ Nothing to Pause",
+                    description=(
+                        "No active incenses are currently running.\n\n"
+                        "Channels are locked automatically when an incense activates."
+                    ),
+                    colour=0x5865F2,
+                )
             )
 
         locked  = []
@@ -507,8 +525,14 @@ class IncenseCog(commands.Cog):
 
         if not actives:
             return await ctx.send(
-                "ℹ️ No active incenses found. "
-                "Incenses register automatically when activated."
+                embed=discord.Embed(
+                    title="ℹ️ Nothing to Resume",
+                    description=(
+                        "No active incenses are currently paused.\n\n"
+                        "Incenses register automatically when activated in a registered channel."
+                    ),
+                    colour=0x5865F2,
+                )
             )
 
         unlocked = []
@@ -530,10 +554,13 @@ class IncenseCog(commands.Cog):
                 await incense_db.set_paused(guild_id, record["channel_id"], False)
                 unlocked.append(record["channel_id"])
                 try:
-                    await ch.send(
-                        "▶️ **Incense Resumed!** Pokémon will start spawning again. "
-                        "Good luck, trainers! 🎉"
+                    resume_embed = discord.Embed(
+                        title="▶️ Incense Live!",
+                        description="The incense is now **active** — Pokémon are spawning! Good luck, trainers! 🎉",
+                        colour=0x57F287,
                     )
+                    resume_embed.set_footer(text=make_footer(guild_id, "Use !pause to pause all incenses"))
+                    await ch.send(embed=resume_embed)
                 except discord.Forbidden:
                     pass
             else:
@@ -938,9 +965,16 @@ class IncenseCog(commands.Cog):
             embed.set_footer(text=make_footer(guild_id, "Incense Manager"))
             await interaction.followup.send(embed=embed)
         else:
-            await interaction.followup.send(
-                f"⚠️ Couldn't lock {ch.mention} — check my permissions.", ephemeral=True
+            err_embed = discord.Embed(
+                title="❌ Lock Failed",
+                description=(
+                    f"I couldn't lock {ch.mention}.\n\n"
+                    "Please check that I have **Manage Channel** and **Manage Roles** permissions."
+                ),
+                colour=0xED4245,
             )
+            err_embed.set_footer(text=make_footer(guild_id, "Incense Manager"))
+            await interaction.followup.send(embed=err_embed, ephemeral=True)
 
     # ── /incense unlock ──────────────────────────────────────────────────────
 
@@ -985,14 +1019,28 @@ class IncenseCog(commands.Cog):
             )
             embed.set_footer(text=make_footer(guild_id, "Incense Manager"))
             await interaction.followup.send(embed=embed)
-            try:
-                await ch.send("▶️ **Incense Resumed!** Pokémon will start spawning. Good luck! 🎉")
-            except discord.Forbidden:
-                pass
+            if ch.id != interaction.channel_id:
+                try:
+                    resume_embed = discord.Embed(
+                        title="▶️ Incense Live!",
+                        description="The incense is now **active** — Pokémon are spawning! Good luck! 🎉",
+                        colour=0x57F287,
+                    )
+                    resume_embed.set_footer(text=make_footer(guild_id, "Use !pause to pause all incenses"))
+                    await ch.send(embed=resume_embed)
+                except discord.Forbidden:
+                    pass
         else:
-            await interaction.followup.send(
-                f"⚠️ Couldn't unlock {ch.mention} — check my permissions.", ephemeral=True
+            err_embed = discord.Embed(
+                title="❌ Unlock Failed",
+                description=(
+                    f"I couldn't unlock {ch.mention}.\n\n"
+                    "Please check that I have **Manage Channel** and **Manage Roles** permissions."
+                ),
+                colour=0xED4245,
             )
+            err_embed.set_footer(text=make_footer(guild_id, "Incense Manager"))
+            await interaction.followup.send(embed=err_embed, ephemeral=True)
 
     # ── /incense recursive ───────────────────────────────────────────────────
 
