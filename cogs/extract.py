@@ -134,7 +134,7 @@ class ExtractCog(commands.Cog):
         target: discord.Message | None = None
         try:
             async for msg in interaction.channel.history(limit=_HISTORY_LIMIT):
-                if msg.author.id == opdex_id and _ID_RE.search(_collect_text(msg)):
+                if msg.author.id == opdex_id and _ID_RE.search(_MD_RE.sub("", _collect_text(msg))):
                     target = msg
                     break
         except (discord.Forbidden, discord.HTTPException) as e:
