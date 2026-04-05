@@ -758,7 +758,7 @@ class IncenseCog(commands.Cog):
             colour=0x57F287,
         )
         embed.set_footer(text=make_footer(gid, "Incense Manager"))
-        await interaction.response.send_message(embed=embed, ephemeral=True)
+        await interaction.response.send_message(embed=embed, ephemeral=False)
 
     @setup_group.command(name="bot", description="Set which bot is the Operation Dex bot for auto-detection.")
     @app_commands.describe(bot_id="The bot's user ID (right-click the bot → Copy User ID)")
