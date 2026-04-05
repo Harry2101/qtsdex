@@ -120,6 +120,80 @@ def _is_channel_locked(channel: discord.TextChannel, opdex_id: int) -> bool:
     return overwrite.send_messages is False
 
 
+# ── Incense detection helpers ─────────────────────────────────────────────────
+
+def _parse_incense_activation(message: discord.Message) -> tuple[bool, str, int] | None:
+    """
+    Check if a message contains an incense activation.
+    Returns (incense_type, total_spawns) if activated, else None.
+    """
+    activated = False
+    incense_type = "Standard"
+    total_spawns = 0
+
+    for embed in message.embeds:
+        title = (embed.title or "").lower()
+        desc = (embed.description or "")
+        if "incense activated" in title or "incense activated" in desc.lower():
+            activated = True
+            type_match = re.search(r"(\w+)\s+incense\s+is\s+now\s+burning", desc, re.IGNORECASE)
+            if type_match:
+                incense_type = type_match.group(1).title()
+            spawns_match = re.search(r"(\d+)\s+(?:total\s+)?spawns?", desc, re.IGNORECASE)
+            if spawns_match:
+                total_spawns = int(spawns_match.group(1))
+            for field in embed.fields:
+                if "spawn" in field.name.lower():
+                    try:
+                        total_spawns = int(re.search(r"\d+", field.value).group())
+                    except Exception:
+                        pass
+            break
+
+    if not activated and "incense activated" in message.content.lower():
+        activated = True
+
+    return (incense_type, total_spawns) if activated else None
+
+
+async def _check_and_lock_active_incense(
+    channel: discord.TextChannel,
+    guild_id: str,
+    opdex_id: int,
+    bot_user_id: str,
+) -> bool:
+    """
+    Scan the last 50 messages in a channel for an active incense.
+    If found, register it and lock the channel. Returns True if locked.
+    """
+    try:
+        async for msg in channel.history(limit=50):
+            if msg.author.id != opdex_id:
+                continue
+            result = _parse_incense_activation(msg)
+            if result is None:
+                continue
+            incense_type, total_spawns = result
+
+            # Found an active incense — register + lock
+            await incense_db.register_incense(guild_id, str(channel.id), incense_type, total_spawns)
+            await incense_db.set_paused(guild_id, str(channel.id), True)
+
+            success = await _lock_channel(channel, opdex_id)
+            if success:
+                await channel.send(embed=_auto_lock_embed(channel, incense_type, total_spawns, guild_id))
+                await incense_db.log_action(
+                    guild_id, bot_user_id, "auto_lock",
+                    f"Auto-locked #{channel.name} on registration ({incense_type}, {total_spawns} spawns)"
+                )
+            else:
+                log.warning(f"Auto-lock on registration failed for #{channel.name}")
+            return True
+    except (discord.Forbidden, discord.HTTPException) as e:
+        log.warning(f"Couldn't scan #{channel.name} for active incense: {e}")
+    return False
+
+
 # ── Embed helpers ─────────────────────────────────────────────────────────────
 
 def _pause_embed(locked, already, failed, cleaned, guild_id: str = "") -> discord.Embed:
@@ -217,12 +291,13 @@ def _auto_lock_embed(channel, incense_type, total_spawns, guild_id: str = "") ->
 class _IncenseAddConfirmView(discord.ui.View):
     """Confirm for bulk incense add."""
     def __init__(self, author: discord.User, channels: list[discord.TextChannel],
-                 guild_id: str, user_id: str):
+                 guild_id: str, user_id: str, bot: commands.Bot):
         super().__init__(timeout=15)
         self.author   = author
         self.channels = channels
         self.guild_id = guild_id
         self.user_id  = user_id
+        self.bot      = bot
         self.confirmed = False
         self._message: Optional[discord.InteractionMessage] = None
 
@@ -248,22 +323,29 @@ class _IncenseAddConfirmView(discord.ui.View):
         added   = [ch for ch in self.channels if str(ch.id) in added_ids]
         already = [ch for ch in self.channels if str(ch.id) in already_ids]
 
-        # Send setup notification to each newly added channel
+        # Check newly added channels for already-active incenses & send notifications
+        opdex_id = await _get_opdex_id(self.guild_id)
+        bot_uid = str(self.bot.user.id)
+        auto_locked = []
         for ch in added:
-            try:
-                notify = discord.Embed(
-                    title="🌿 Incense Channel Activated",
-                    description=(
-                        "This channel has been set up as a **QTs mass incense channel**.\n\n"
-                        "When an incense is activated here, the channel will be "
-                        "**automatically locked** until the organiser runs `!resume`."
-                    ),
-                    colour=0x57F287,
-                )
-                notify.set_footer(text=make_footer(self.guild_id, "Incense Manager"))
-                await ch.send(embed=notify)
-            except discord.Forbidden:
-                pass
+            locked = await _check_and_lock_active_incense(ch, self.guild_id, opdex_id, bot_uid)
+            if locked:
+                auto_locked.append(ch)
+            else:
+                try:
+                    notify = discord.Embed(
+                        title="🌿 Incense Channel Activated",
+                        description=(
+                            "This channel has been set up as a **QTs mass incense channel**.\n\n"
+                            "When an incense is activated here, the channel will be "
+                            "**automatically locked** until the organiser runs `!resume`."
+                        ),
+                        colour=0x57F287,
+                    )
+                    notify.set_footer(text=make_footer(self.guild_id, "Incense Manager"))
+                    await ch.send(embed=notify)
+                except discord.Forbidden:
+                    pass
 
         embed = discord.Embed(
             title="🌿 Incense Channels Updated",
@@ -274,6 +356,9 @@ class _IncenseAddConfirmView(discord.ui.View):
             if len(added) > 20:
                 preview += f" *+{len(added) - 20} more*"
             embed.add_field(name=f"✅ Registered ({len(added)})", value=preview, inline=False)
+        if auto_locked:
+            preview = ", ".join(ch.mention for ch in auto_locked[:20])
+            embed.add_field(name=f"🔒 Auto-locked ({len(auto_locked)})", value=preview, inline=False)
         if already:
             preview = ", ".join(ch.mention for ch in already[:15])
             if len(already) > 15:
@@ -391,35 +476,11 @@ class IncenseCog(commands.Cog):
         if message.author.id != opdex_id:
             return
 
-        activated    = False
-        incense_type = "Standard"
-        total_spawns = 0
-
-        for embed in message.embeds:
-            title = (embed.title or "").lower()
-            desc  = (embed.description or "")
-            if "incense activated" in title or "incense activated" in desc.lower():
-                activated   = True
-                type_match  = re.search(r"(\w+)\s+incense\s+is\s+now\s+burning", desc, re.IGNORECASE)
-                if type_match:
-                    incense_type = type_match.group(1).title()
-                spawns_match = re.search(r"(\d+)\s+(?:total\s+)?spawns?", desc, re.IGNORECASE)
-                if spawns_match:
-                    total_spawns = int(spawns_match.group(1))
-                for field in embed.fields:
-                    if "spawn" in field.name.lower():
-                        try:
-                            total_spawns = int(re.search(r"\d+", field.value).group())
-                        except Exception:
-                            pass
-                break
-
-        if not activated and "incense activated" in message.content.lower():
-            activated = True
-
-        if not activated:
+        result = _parse_incense_activation(message)
+        if result is None:
             return
 
+        incense_type, total_spawns = result
         channel_id = str(message.channel.id)
 
         if not await incense_db.is_incense_channel(guild_id, channel_id):
@@ -613,6 +674,14 @@ class IncenseCog(commands.Cog):
             ok = await incense_db.add_channel(guild_id, cid, str(ctx.author.id))
             (added if ok else already).append(ch)
 
+        # Check newly added channels for already-active incenses
+        opdex_id = await _get_opdex_id(guild_id)
+        bot_uid = str(self.bot.user.id)
+        auto_locked = []
+        for ch in added:
+            if await _check_and_lock_active_incense(ch, guild_id, opdex_id, bot_uid):
+                auto_locked.append(ch)
+
         embed = discord.Embed(
             title="🌿 Incense Channels Updated",
             colour=0x57F287 if added else 0xFEE75C,
@@ -621,6 +690,12 @@ class IncenseCog(commands.Cog):
             embed.add_field(
                 name=f"✅ Registered ({len(added)})",
                 value="\n".join(ch.mention for ch in added[:20]),
+                inline=True,
+            )
+        if auto_locked:
+            embed.add_field(
+                name=f"🔒 Auto-locked ({len(auto_locked)})",
+                value="\n".join(ch.mention for ch in auto_locked[:20]),
                 inline=True,
             )
         if already:
@@ -836,7 +911,7 @@ class IncenseCog(commands.Cog):
         )
         embed.set_footer(text=make_footer(guild_id, "Incense Manager"))
 
-        view = _IncenseAddConfirmView(interaction.user, unique, guild_id, str(interaction.user.id))
+        view = _IncenseAddConfirmView(interaction.user, unique, guild_id, str(interaction.user.id), self.bot)
         await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
 
     # ── /incense remove ──────────────────────────────────────────────────────
@@ -1136,6 +1211,14 @@ class IncenseCog(commands.Cog):
                 f"{'from' if include_current else 'after'} {current.mention} to the last channel"
             )
 
+        # Check newly added channels for already-active incenses
+        opdex_id = await _get_opdex_id(guild_id)
+        bot_uid = str(self.bot.user.id)
+        auto_locked = []
+        for ch in added:
+            if await _check_and_lock_active_incense(ch, guild_id, opdex_id, bot_uid):
+                auto_locked.append(ch)
+
         embed = discord.Embed(
             title="🌿 Recursive Registration Complete",
             description=f"Scanned **{len(targets)}** channel{'s' if len(targets) != 1 else ''} {range_desc}.",
@@ -1146,6 +1229,11 @@ class IncenseCog(commands.Cog):
             if len(added) > 10:
                 preview += f" *+{len(added)-10} more*"
             embed.add_field(name=f"✅ Registered ({len(added)})", value=preview, inline=False)
+        if auto_locked:
+            preview = ", ".join(ch.mention for ch in auto_locked[:10])
+            if len(auto_locked) > 10:
+                preview += f" *+{len(auto_locked)-10} more*"
+            embed.add_field(name=f"🔒 Auto-locked ({len(auto_locked)})", value=preview, inline=False)
         if already:
             preview = ", ".join(ch.mention for ch in already[:10])
             if len(already) > 10:
