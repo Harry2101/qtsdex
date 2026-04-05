@@ -79,7 +79,7 @@ class ExtractCog(commands.Cog):
 
     # ── Prefix command: !extract ──────────────────────────────────────────────
 
-    @commands.command(name="extract")
+    @commands.command(name="extract", aliases=["e"])
     async def extract_prefix(self, ctx: commands.Context):
         """Reply to an Operation Dex message to extract all Pokémon IDs."""
         if not ctx.message.reference:

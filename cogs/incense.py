@@ -521,7 +521,7 @@ class IncenseCog(commands.Cog):
 
     # ── !pause ────────────────────────────────────────────────────────────────
 
-    @commands.command(name="pause")
+    @commands.command(name="pause", aliases=["p"])
     async def pause_cmd(self, ctx: commands.Context):
         if not _is_qt_guild(ctx):
             return
@@ -580,7 +580,7 @@ class IncenseCog(commands.Cog):
 
     # ── !resume ───────────────────────────────────────────────────────────────
 
-    @commands.command(name="resume")
+    @commands.command(name="resume", aliases=["r"])
     async def resume_cmd(self, ctx: commands.Context):
         if not _is_qt_guild(ctx):
             return
