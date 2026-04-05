@@ -24,15 +24,19 @@ log = logging.getLogger("qtsdex.extract")
 # Fallback when guild hasn't configured an OpDex bot ID via /incense setup
 _DEFAULT_OPDEX = int(os.getenv("DEFAULT_OPDEX_BOT_ID", "1471263987340410978"))
 
-# Matches "ID: 826422" or "ID:826422" (case-insensitive, any whitespace)
-_ID_RE = re.compile(r"\bID:\s*(\d+)", re.IGNORECASE)
+# Matches "ID:826422" or "ID: 826422" — no \b so Discord markdown chars don't trip it
+# Colon made optional to handle edge cases like "ID 826422"
+_ID_RE = re.compile(r"ID:?\s{0,5}(\d+)", re.IGNORECASE)
+
+# Markdown chars that Discord bots may embed around text (stripped before matching)
+_MD_RE = re.compile(r"[*_`~|]")
 
 # How many recent messages to scan for /extract
 _HISTORY_LIMIT = 50
 
 
 def _collect_text(msg: discord.Message) -> str:
-    """Return all human-readable text from a message, including embed fields."""
+    """Return all human-readable text from a message, including every embed part."""
     parts: list[str] = []
     if msg.content:
         parts.append(msg.content)
@@ -40,6 +44,7 @@ def _collect_text(msg: discord.Message) -> str:
         for chunk in (
             embed.title,
             embed.description,
+            embed.author.name if embed.author else None,
             embed.footer.text if embed.footer else None,
         ):
             if chunk:
@@ -53,7 +58,11 @@ def _collect_text(msg: discord.Message) -> str:
 
 
 def _extract_ids(msg: discord.Message) -> list[str]:
-    return _ID_RE.findall(_collect_text(msg))
+    raw = _collect_text(msg)
+    # Strip Discord markdown so **ID:123** → ID:123 before matching
+    clean = _MD_RE.sub("", raw)
+    log.debug("extract: collected text from msg %s:\n%s", msg.id, clean[:500])
+    return _ID_RE.findall(clean)
 
 
 async def _get_opdex_id(guild_id: int | None) -> int:
