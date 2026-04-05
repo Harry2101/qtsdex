@@ -3,8 +3,9 @@ services/starboard_db.py
 SQLite storage for the starboard & leaderboard system.
 
 Tables:
-  starboard_config  — per-guild starboard channel settings
-  shiny_catches     — individual shiny catch records for leaderboard
+  starboard_config   — per-guild starboard channel settings
+  shiny_catches      — individual shiny catch records for leaderboard
+  champion_history   — weekly/monthly champion records for streaks & history
 """
 
 import asyncio
@@ -48,12 +49,29 @@ async def init_db():
                 caught_at     TEXT NOT NULL DEFAULT (datetime('now'))
             );
 
+            CREATE TABLE IF NOT EXISTS champion_history (
+                id            INTEGER PRIMARY KEY AUTOINCREMENT,
+                guild_id      TEXT NOT NULL,
+                period_type   TEXT NOT NULL,
+                period_label  TEXT NOT NULL,
+                user_id       TEXT NOT NULL DEFAULT '',
+                user_name     TEXT NOT NULL DEFAULT '',
+                catch_count   INTEGER NOT NULL DEFAULT 0,
+                total_catches INTEGER NOT NULL DEFAULT 0,
+                recorded_at   TEXT NOT NULL DEFAULT (datetime('now')),
+                UNIQUE(guild_id, period_type, period_label)
+            );
+
             CREATE INDEX IF NOT EXISTS idx_shiny_guild
                 ON shiny_catches (guild_id);
             CREATE INDEX IF NOT EXISTS idx_shiny_caught_at
                 ON shiny_catches (guild_id, caught_at);
             CREATE INDEX IF NOT EXISTS idx_shiny_user
                 ON shiny_catches (guild_id, user_id);
+            CREATE INDEX IF NOT EXISTS idx_champion_guild
+                ON champion_history (guild_id, period_type, recorded_at);
+            CREATE INDEX IF NOT EXISTS idx_champion_user
+                ON champion_history (guild_id, user_id);
         """)
         await db.commit()
         # Add announce_channel column if upgrading from older schema
@@ -272,3 +290,199 @@ async def get_catch_count(guild_id: str, period: str = "all") -> int:
         ) as cur:
             row = await cur.fetchone()
             return row[0] if row else 0
+
+
+# ── Champion history ────────────────────────────────────────────────────────
+
+async def record_champion(
+    guild_id: str,
+    period_type: str,
+    period_label: str,
+    user_id: str,
+    user_name: str,
+    catch_count: int,
+    total_catches: int,
+) -> int:
+    """Record a champion for a period. Updates if already exists. Returns row ID."""
+    async with _write_lock:
+        async with aiosqlite.connect(DB_PATH) as db:
+            cur = await db.execute(
+                """INSERT INTO champion_history
+                       (guild_id, period_type, period_label, user_id, user_name, catch_count, total_catches)
+                   VALUES (?, ?, ?, ?, ?, ?, ?)
+                   ON CONFLICT(guild_id, period_type, period_label) DO UPDATE SET
+                       user_id=excluded.user_id,
+                       user_name=excluded.user_name,
+                       catch_count=excluded.catch_count,
+                       total_catches=excluded.total_catches""",
+                (guild_id, period_type, period_label, user_id, user_name, catch_count, total_catches),
+            )
+            await db.commit()
+            return cur.lastrowid
+
+
+async def get_champion_streak(guild_id: str, period_type: str, user_id: str) -> int:
+    """
+    Get the current consecutive win streak for a user.
+    Counts backwards from the most recent period of this type.
+    """
+    async with aiosqlite.connect(DB_PATH) as db:
+        async with db.execute(
+            """SELECT user_id FROM champion_history
+               WHERE guild_id=? AND period_type=?
+               ORDER BY period_label DESC""",
+            (guild_id, period_type),
+        ) as cur:
+            streak = 0
+            async for row in cur:
+                if row[0] == user_id:
+                    streak += 1
+                else:
+                    break
+            return streak
+
+
+async def get_total_wins(guild_id: str, period_type: str, user_id: str) -> int:
+    """Get total number of times a user has been champion for a period type."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        async with db.execute(
+            """SELECT COUNT(*) FROM champion_history
+               WHERE guild_id=? AND period_type=? AND user_id=?""",
+            (guild_id, period_type, user_id),
+        ) as cur:
+            row = await cur.fetchone()
+            return row[0] if row else 0
+
+
+async def get_champion_history(
+    guild_id: str, period_type: str, limit: int = 10, offset: int = 0
+) -> list[tuple]:
+    """
+    Get past champions for a period type, newest first.
+    Returns list of (period_label, user_name, user_id, catch_count, total_catches).
+    """
+    async with aiosqlite.connect(DB_PATH) as db:
+        async with db.execute(
+            """SELECT period_label, user_name, user_id, catch_count, total_catches
+               FROM champion_history
+               WHERE guild_id=? AND period_type=?
+               ORDER BY period_label DESC
+               LIMIT ? OFFSET ?""",
+            (guild_id, period_type, limit, offset),
+        ) as cur:
+            return await cur.fetchall()
+
+
+async def get_champion_history_count(guild_id: str, period_type: str) -> int:
+    """Get total number of champion records for a period type."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        async with db.execute(
+            "SELECT COUNT(*) FROM champion_history WHERE guild_id=? AND period_type=?",
+            (guild_id, period_type),
+        ) as cur:
+            row = await cur.fetchone()
+            return row[0] if row else 0
+
+
+async def get_user_stats(guild_id: str, user_id: str) -> dict:
+    """Get comprehensive stats for a user in a guild."""
+    stats = {
+        "total_catches": 0,
+        "week_catches": 0,
+        "month_catches": 0,
+        "weekly_wins": 0,
+        "monthly_wins": 0,
+        "weekly_streak": 0,
+        "monthly_streak": 0,
+        "best_week": 0,
+        "best_month": 0,
+        "unique_pokemon": 0,
+    }
+    async with aiosqlite.connect(DB_PATH) as db:
+        # Total catches
+        async with db.execute(
+            "SELECT COUNT(*) FROM shiny_catches WHERE guild_id=? AND user_id=?",
+            (guild_id, user_id),
+        ) as cur:
+            row = await cur.fetchone()
+            stats["total_catches"] = row[0] if row else 0
+
+        # Week catches
+        async with db.execute(
+            "SELECT COUNT(*) FROM shiny_catches WHERE guild_id=? AND user_id=? AND caught_at >= datetime('now', '-7 days')",
+            (guild_id, user_id),
+        ) as cur:
+            row = await cur.fetchone()
+            stats["week_catches"] = row[0] if row else 0
+
+        # Month catches
+        async with db.execute(
+            "SELECT COUNT(*) FROM shiny_catches WHERE guild_id=? AND user_id=? AND caught_at >= datetime('now', '-1 month')",
+            (guild_id, user_id),
+        ) as cur:
+            row = await cur.fetchone()
+            stats["month_catches"] = row[0] if row else 0
+
+        # Weekly wins
+        async with db.execute(
+            "SELECT COUNT(*) FROM champion_history WHERE guild_id=? AND period_type='week' AND user_id=?",
+            (guild_id, user_id),
+        ) as cur:
+            row = await cur.fetchone()
+            stats["weekly_wins"] = row[0] if row else 0
+
+        # Monthly wins
+        async with db.execute(
+            "SELECT COUNT(*) FROM champion_history WHERE guild_id=? AND period_type='month' AND user_id=?",
+            (guild_id, user_id),
+        ) as cur:
+            row = await cur.fetchone()
+            stats["monthly_wins"] = row[0] if row else 0
+
+        # Best week (from champion_history)
+        async with db.execute(
+            "SELECT MAX(catch_count) FROM champion_history WHERE guild_id=? AND period_type='week' AND user_id=?",
+            (guild_id, user_id),
+        ) as cur:
+            row = await cur.fetchone()
+            stats["best_week"] = row[0] if row and row[0] else 0
+
+        # Best month (from champion_history)
+        async with db.execute(
+            "SELECT MAX(catch_count) FROM champion_history WHERE guild_id=? AND period_type='month' AND user_id=?",
+            (guild_id, user_id),
+        ) as cur:
+            row = await cur.fetchone()
+            stats["best_month"] = row[0] if row and row[0] else 0
+
+        # Unique pokemon
+        async with db.execute(
+            "SELECT COUNT(DISTINCT pokemon_name) FROM shiny_catches WHERE guild_id=? AND user_id=? AND pokemon_name != ''",
+            (guild_id, user_id),
+        ) as cur:
+            row = await cur.fetchone()
+            stats["unique_pokemon"] = row[0] if row else 0
+
+    # Streaks (uses separate queries)
+    stats["weekly_streak"] = await get_champion_streak(guild_id, "week", user_id)
+    stats["monthly_streak"] = await get_champion_streak(guild_id, "month", user_id)
+
+    return stats
+
+
+async def get_top_champions(guild_id: str, period_type: str, limit: int = 10) -> list[tuple]:
+    """
+    Get users ranked by most champion wins for a period type.
+    Returns list of (user_name, user_id, win_count).
+    """
+    async with aiosqlite.connect(DB_PATH) as db:
+        async with db.execute(
+            """SELECT user_name, user_id, COUNT(*) as wins
+               FROM champion_history
+               WHERE guild_id=? AND period_type=?
+               GROUP BY user_id
+               ORDER BY wins DESC
+               LIMIT ?""",
+            (guild_id, period_type, limit),
+        ) as cur:
+            return await cur.fetchall()
