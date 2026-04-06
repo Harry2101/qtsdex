@@ -937,15 +937,21 @@ class StarboardCog(commands.Cog):
                 medal = {2: "🥈", 3: "🥉"}.get(i, f"`{i}.`")
                 podium_lines.append(f"{medal} {display} — **{cnt}**")
 
-            embed.add_field(
-                name="🏅 Podium",
-                value="\n".join(podium_lines[:2]) + "\n\u200b",
-                inline=True,
-            )
+            podium_value = "\n".join(podium_lines[:2])
+        else:
+            podium_value = "No runners-up yet.\n\u200b"
 
         embed.add_field(
-            name="🌐 Total",
-            value=f"**{total} ✨**\n\u200b",
+            name="🏅 Podium",
+            value=podium_value,
+            inline=True,
+        )
+
+        # Put the compact stat in the field name instead of the body.
+        # This avoids a tiny floating body like "4 ✨" under a generic label.
+        embed.add_field(
+            name=f"🌐 {total} ✨",
+            value="\u200b\n\u200b",
             inline=True,
         )
 
@@ -967,6 +973,7 @@ class StarboardCog(commands.Cog):
 
         # No extra header above the embed
         return None, embed
+
     async def _post_top_catcher(
         self,
         guild: discord.Guild,
