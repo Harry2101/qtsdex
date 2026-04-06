@@ -166,13 +166,16 @@ async def _build_user_embed(
                 catch_lines.append(f"🔥 **Monthly streak:** {stats['monthly_streak']}")
             embed.add_field(name="✨ Shiny Catches", value="\n".join(catch_lines), inline=False)
 
-    # ── Raw DB rows for unknown trainer diagnosis ──
+    # ── Recent catch records ──
     if interaction.guild:
         guild_id = str(interaction.guild.id)
+        cfg = starboard_db.get_config(guild_id)
+        channel_id = cfg["channel_id"] if cfg else None
+
         import aiosqlite
         async with aiosqlite.connect("data/starboard.db") as db:
             async with db.execute(
-                """SELECT pokemon_name, user_name, user_id, caught_at
+                """SELECT pokemon_name, user_name, user_id, caught_at, message_id
                    FROM shiny_catches
                    WHERE guild_id=? AND (user_id=? OR user_name LIKE ?)
                    ORDER BY caught_at DESC LIMIT 5""",
@@ -180,11 +183,14 @@ async def _build_user_embed(
             ) as cur:
                 recent = await cur.fetchall()
         if recent:
-            rows_text = "\n".join(
-                f"`{r[3][:10]}` {r[0]} — uid={r[2] or '?'} name={r[1] or '?'}"
-                for r in recent
-            )
-            embed.add_field(name="🗄️ Recent DB Rows", value=rows_text, inline=False)
+            rows_text = []
+            for pname, uname, uid, ts, mid in recent:
+                date = ts[:10] if ts else "?"
+                pokemon = pname or "?"
+                link = f"https://discord.com/channels/{guild_id}/{channel_id}/{mid}" if channel_id and mid else None
+                jump = f"[↗]({link})" if link else ""
+                rows_text.append(f"`{date}` ✨ **{pokemon}** {jump}")
+            embed.add_field(name="✨ Recent Catches", value="\n".join(rows_text), inline=False)
 
     embed.set_footer(text=f"Owner inspection • {now.strftime('%d %b %Y %H:%M UTC')}")
     embed.timestamp = now
@@ -244,6 +250,9 @@ class InspectCog(commands.Cog):
 
         import aiosqlite
         guild_id = str(interaction.guild.id)
+        cfg = starboard_db.get_config(guild_id)
+        channel_id = cfg["channel_id"] if cfg else None
+
         async with aiosqlite.connect("data/starboard.db") as db:
             async with db.execute(
                 """SELECT id, pokemon_name, user_name, user_id, message_id, caught_at
@@ -257,19 +266,24 @@ class InspectCog(commands.Cog):
         if not rows:
             return await interaction.followup.send("✅ No unknown-user catch records found.", ephemeral=True)
 
-        lines = [f"**{len(rows)} catch(es) with missing user ID:**\n"]
+        lines = []
         for row_id, pname, uname, uid, mid, ts in rows:
+            date = ts[:10] if ts else "?"
+            pokemon = pname or "?"
+            name_info = uname or "*none*"
+            link = f"https://discord.com/channels/{guild_id}/{channel_id}/{mid}" if channel_id and mid else None
+            jump = f"[Jump to message]({link})" if link else f"`msg: {mid}`"
             lines.append(
-                f"`#{row_id}` {ts[:10]} — **{pname or '?'}**\n"
-                f"  name=`{uname or 'none'}` uid=`{uid or 'none'}` msg=`{mid}`"
+                f"`#{row_id}` · `{date}` · **{pokemon}**\n"
+                f"name: `{name_info}` · {jump}"
             )
 
         embed = discord.Embed(
-            title="🔍 Unknown Catch Records",
-            description="\n".join(lines),
+            title=f"🔍 Unknown Catch Records ({len(rows)})",
+            description="\n\n".join(lines),
             colour=0xFF6B35,
         )
-        embed.set_footer(text="Use /inspect id to look up a specific user")
+        embed.set_footer(text="Use /inspect id <user_id> to look up a specific user")
         await interaction.followup.send(embed=embed, ephemeral=True)
 
 
