@@ -589,7 +589,7 @@ class StarboardCog(commands.Cog):
                     )
                 content, embed = result
                 await btn_interaction.response.send_message(
-                    f"-# Preview — this is how it will look in {announce_ch.mention}\n{content}",
+                    f"-# Preview — this is how it will look in {announce_ch.mention}",
                     embed=embed,
                     ephemeral=True,
                 )
@@ -815,7 +815,7 @@ class StarboardCog(commands.Cog):
         guild_id: str,
         period: str,
         record: bool = True,
-    ) -> tuple[str, discord.Embed] | None:
+    ) -> tuple[str | None, discord.Embed] | None:
         """
         Build the announcement message content and embed.
         Returns (content, embed), or None if there is nothing to announce.
@@ -847,99 +847,98 @@ class StarboardCog(commands.Cog):
                 total_catches=total,
             )
 
+        total_wins = await starboard_db.get_champion_win_count(guild_id, period, top_uid)
         streak = await starboard_db.get_champion_streak(guild_id, period, top_uid)
-        total_wins = await starboard_db.get_total_wins(guild_id, period, top_uid)
 
-        # ── Resolve avatar ──
         avatar_url = None
         if top_uid:
             try:
                 member = guild.get_member(int(top_uid)) or await guild.fetch_member(int(top_uid))
                 if member:
-                    avatar_url = member.display_avatar.with_size(512).url
-            except (discord.NotFound, discord.HTTPException):
+                    avatar_url = member.display_avatar.with_size(256).url
+            except (discord.NotFound, discord.HTTPException, ValueError):
                 pass
 
-        # ── Theme: weekly = gold trophy, monthly = prestige crown ──
-        # ── Theme: weekly = gold trophy, monthly = prestige crown ──
+        # ── Theme ──────────────────────────────────────────────────────────────
         if period == "week":
             colour = 0xFFD700
             award_icon = "🏆"
             title_text = "WEEKLY SHINY CHAMPION"
-            heading_text = "🏆 WEEKLY SHINY CHAMPION 🏆"
             period_text = "this week"
             award_text = "Awarded the **Weekly Trophy** 🏆"
-            first_win_text = "🌟 Congratulations on your **FIRST TROPHY**!"
+            first_win_text = "🌟 **FIRST TROPHY!** Welcome to the top."
         else:
             colour = 0xFF4500
             award_icon = "👑"
             title_text = "MONTHLY SHINY LEGEND"
-            heading_text = "👑 MONTHLY SHINY LEGEND 👑"
             period_text = "this month"
             award_text = "Crowned this month's **Shiny Legend** 👑"
-            first_win_text = "🌟 Congratulations on your **FIRST CROWN**!"
+            first_win_text = "🌟 **FIRST CROWN!** A new legend rises."
 
         embed = discord.Embed(color=colour)
-        embed.set_author(name=title_text, icon_url=avatar_url or discord.Embed.Empty)
+        embed.title = f"{award_icon} {title_text} {award_icon}"
 
         if avatar_url:
             embed.set_thumbnail(url=avatar_url)
 
-        # ── Main hero block ──
-        hero = []
-        hero.append(f"## {top_display}")
+        # ── Main hero block ────────────────────────────────────────────────────
+        desc = [
+            f"# {top_display}",
+            f"✨ **{top_cnt}** shinies caught {period_text}",
+            "",
+            award_text,
+        ]
+
+        if total_wins <= 1 and streak <= 1:
+            desc.append(first_win_text)
+        elif streak >= 2:
+            flame = "🔥" * min(streak, 5)
+            desc.append(f"{flame} **{streak}-period streak!** Reigning champion.")
 
         if total_wins >= 2:
             win_icons = award_icon * min(total_wins, 10)
-            hero.append(f"{win_icons}")
+            desc.append(f"**{total_wins}** career titles {win_icons}")
 
-        hero.append(f"✨ **{top_cnt}** shinies caught {period_text}")
-        hero.append("")
-        hero.append(award_text)
+        embed.description = "\n".join(desc)
 
-        if total_wins <= 1 and streak <= 1:
-            hero.append(first_win_text)
-        elif streak >= 2:
-            flame = "🔥" * min(streak, 5)
-            hero.append(f"{flame} **{streak} wins in a row!** Reigning champion!")
-
-        embed.description = "\n".join(hero)
-
-        # ── Podium field ──
+        # ── Supporting fields ──────────────────────────────────────────────────
         if len(rows) > 1:
             podium_lines = []
             for i, (uname, uid, cnt) in enumerate(rows[1:5], start=2):
                 display = f"<@{uid}>" if uid else (uname or "`[unknown]`")
                 medal = {2: "🥈", 3: "🥉"}.get(i, f"`{i}.`")
                 podium_lines.append(f"{medal} {display} — **{cnt}**")
-            embed.add_field(name="Podium", value="\n".join(podium_lines), inline=False)
 
-        # ── Stats field ──
+            embed.add_field(
+                name="🏅 Podium",
+                value="\n".join(podium_lines),
+                inline=True,
+            )
+
         embed.add_field(
-            name="Server Total",
-            value=f"**{total}** shinies caught across the server {period_text}",
-            inline=False
+            name="🌐 Server Total",
+            value=f"**{total}** total shinies",
+            inline=True,
         )
 
-        # ── Reset field ──
         hype = random.choice([
-            "The hunt continues — who's next?",
+            "The hunt continues.",
             "Can anyone dethrone the champion?",
-            "The competition is heating up!",
-            "Trainers, the grind never stops!",
+            "The competition is heating up.",
+            "The grind never stops.",
         ])
         next_ts = int(_next_reset_dt(period, now).timestamp())
+
         embed.add_field(
-            name="Next Reset",
-            value=f"{hype}\nResets <t:{next_ts}:R>",
-            inline=False
+            name="⏳ Resets",
+            value=f"<t:{next_ts}:R>\n*{hype}*",
+            inline=True,
         )
 
         embed.set_footer(text="✨ Good luck, hunters!")
 
-        content = heading_text
-        return content, embed
-
+        # No extra header above the embed
+        return None, embed
     async def _post_top_catcher(
         self,
         guild: discord.Guild,
@@ -950,17 +949,23 @@ class StarboardCog(commands.Cog):
         result = await self._build_announcement(guild, guild_id, period, record=True)
         if result is None:
             return
-        content, embed = result
-        await channel.send(content, embed=embed)
 
-        # Send role ping as a separate message after the embed
+        content, embed = result
+
+        if content:
+            await channel.send(content, embed=embed)
+        else:
+            await channel.send(embed=embed)
+
+        # Send role ping(s) as a separate message after the embed
         cfg = starboard_db.get_config(guild_id)
-        ping_role_id = cfg.get("announce_ping_role", "") if cfg else ""
-        if ping_role_id:
-            await channel.send(f"<@&{ping_role_id}>")
+        ping_role_raw = cfg.get("announce_ping_role", "") if cfg else ""
+        role_ids = [r for r in ping_role_raw.split(",") if r]
+
+        if role_ids:
+            await channel.send(" ".join(f"<@&{rid}>" for rid in role_ids))
 
         log.info(f"Posted {period} announcement in #{channel.name} for {guild.name}")
-
 
 # ── Interactive Leaderboard View ────────────────────────────────────────────
 
