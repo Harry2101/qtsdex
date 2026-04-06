@@ -939,13 +939,13 @@ class StarboardCog(commands.Cog):
 
             embed.add_field(
                 name="🏅 Podium",
-                value="\n".join(podium_lines),
+                value="\n".join(podium_lines[:2]) + "\n\u200b",
                 inline=True,
             )
 
         embed.add_field(
             name="🌐 Total",
-            value=f"   **{total}** ✨",
+            value=f"**{total} ✨**\n\u200b",
             inline=True,
         )
 
