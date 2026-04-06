@@ -19,8 +19,12 @@ from services import starboard_db
 OWNER_ID = int(os.getenv("OWNER_ID", "145065060568530944"))
 
 
-def _is_owner(interaction: discord.Interaction) -> bool:
-    return interaction.user.id == OWNER_ID
+def _is_authorized(interaction: discord.Interaction) -> bool:
+    """Bot owner or server admin."""
+    if interaction.user.id == OWNER_ID:
+        return True
+    perms = getattr(interaction.user, "guild_permissions", None)
+    return perms.administrator if perms else False
 
 
 def _fmt_dt(dt: datetime | None) -> str:
@@ -211,7 +215,7 @@ class InspectCog(commands.Cog):
     @inspect.command(name="user", description="Full inspection of a user by mention (owner only)")
     @app_commands.describe(user="The user to inspect")
     async def inspect_user(self, interaction: discord.Interaction, user: discord.User):
-        if not _is_owner(interaction):
+        if not _is_authorized(interaction):
             return await interaction.response.send_message("🚫 Owner only.", ephemeral=True)
         await interaction.response.defer(ephemeral=True)
         embed = await _build_user_embed(self.bot, interaction, user)
@@ -220,7 +224,7 @@ class InspectCog(commands.Cog):
     @inspect.command(name="id", description="Full inspection of a user by raw ID (owner only)")
     @app_commands.describe(user_id="The Discord user ID to look up")
     async def inspect_id(self, interaction: discord.Interaction, user_id: str):
-        if not _is_owner(interaction):
+        if not _is_authorized(interaction):
             return await interaction.response.send_message("🚫 Owner only.", ephemeral=True)
 
         if not user_id.isdigit():
@@ -240,7 +244,7 @@ class InspectCog(commands.Cog):
 
     @inspect.command(name="unknown", description="Find and diagnose all 'unknown' catch records (owner only)")
     async def inspect_unknown(self, interaction: discord.Interaction):
-        if not _is_owner(interaction):
+        if not _is_authorized(interaction):
             return await interaction.response.send_message("🚫 Owner only.", ephemeral=True)
 
         if not interaction.guild:
