@@ -841,8 +841,10 @@ class StarboardCog(commands.Cog):
         desc = []
 
         # ── 1. TROPHY AWARD — the gamification moment ──
+        # When record=True the champion was already saved, so first-timers have total_wins==1.
+        # When record=False (preview) first-timers still have total_wins==0.
         desc.append(trophy_msg)
-        if total_wins == 1 and streak <= 1:
+        if total_wins <= 1 and streak <= 1:
             desc.append("🌟 Congratulations on your **first crown**! A star is born! 🌟")
         elif streak >= 2:
             flame = "🔥" * min(streak, 5)
@@ -897,14 +899,7 @@ class StarboardCog(commands.Cog):
         else:
             winner_line = top_display
 
-        # Ping the configured announcement role if set
-        cfg = starboard_db.get_config(guild_id)
-        ping_role_id = cfg.get("announce_ping_role", "") if cfg else ""
-        role_ping = f"<@&{ping_role_id}>" if ping_role_id else ""
-
         content = f"## {heading_text}\n{winner_line}"
-        if role_ping:
-            content += f"\n{role_ping}"
         return content, embed
 
     async def _post_top_catcher(
@@ -919,6 +914,13 @@ class StarboardCog(commands.Cog):
             return
         content, embed = result
         await channel.send(content, embed=embed)
+
+        # Send role ping as a separate message after the embed
+        cfg = starboard_db.get_config(guild_id)
+        ping_role_id = cfg.get("announce_ping_role", "") if cfg else ""
+        if ping_role_id:
+            await channel.send(f"<@&{ping_role_id}>")
+
         log.info(f"Posted {period} announcement in #{channel.name} for {guild.name}")
 
 
