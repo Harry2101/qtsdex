@@ -861,64 +861,67 @@ class StarboardCog(commands.Cog):
                 pass
 
         # ── Theme: weekly = gold trophy, monthly = prestige crown ──
+        # ── Theme: weekly = gold trophy, monthly = prestige crown ──
         if period == "week":
             colour = 0xFFD700
-            trophy = "🏆"
+            award_icon = "🏆"
             title_text = "WEEKLY SHINY CHAMPION"
-            first_win_text = "Congratulations on your **FIRST TROPHY**!"
             heading_text = "🏆 WEEKLY SHINY CHAMPION 🏆"
             period_text = "this week"
-            trophy_msg = "Earned a **Weekly Trophy** 🏆"
+            award_text = "Awarded the **Weekly Trophy** 🏆"
+            first_win_text = "🌟 Congratulations on your **FIRST TROPHY**!"
         else:
             colour = 0xFF4500
-            trophy = "👑"
+            award_icon = "👑"
             title_text = "MONTHLY SHINY LEGEND"
-            first_win_text = "Congratulations on your **FIRST CROWN**!"
             heading_text = "👑 MONTHLY SHINY LEGEND 👑"
             period_text = "this month"
-            trophy_msg = "Earned a **Monthly Crown** 👑"
+            award_text = "Crowned this month's **Shiny Legend** 👑"
+            first_win_text = "🌟 Congratulations on your **FIRST CROWN**!"
 
-        # ══════════════════════════════════════════════════════════════════
-        # THE EMBED — strict hierarchy, top to bottom:
-        #   1. Author bar  = trophy icon + title (small, sets context)
-        #   2. Thumbnail   = champion's avatar (top-right, clean)
-        #   3. Description = trophy award → key stat → streak → podium → server stat → hype → reset
-        #   4. Footer      = encouragement (no timestamp clutter)
-        # ══════════════════════════════════════════════════════════════════
+        embed = discord.Embed(color=colour)
+        embed.set_author(name=title_text, icon_url=avatar_url or discord.Embed.Empty)
 
-        desc = []
+        if avatar_url:
+            embed.set_thumbnail(url=avatar_url)
 
-        # ── 1. TROPHY AWARD — the gamification moment ──
-        # When record=True the champion was already saved, so first-timers have total_wins==1.
-        # When record=False (preview) first-timers still have total_wins==0.
-        desc.append(trophy_msg)
+        # ── Main hero block ──
+        hero = []
+        hero.append(f"## {top_display}")
+
+        if total_wins >= 2:
+            win_icons = award_icon * min(total_wins, 10)
+            hero.append(f"{win_icons}")
+
+        hero.append(f"✨ **{top_cnt}** shinies caught {period_text}")
+        hero.append("")
+        hero.append(award_text)
+
         if total_wins <= 1 and streak <= 1:
-            desc.append(first_win_text )
+            hero.append(first_win_text)
         elif streak >= 2:
             flame = "🔥" * min(streak, 5)
-            desc.append(f"{flame} **{streak} wins in a row!** Reigning champion!")
-        if total_wins >= 2:
-            trophies = trophy * min(total_wins, 10)
-            desc.append(f"**{total_wins}** career titles: {trophies}")
-        desc.append("")
+            hero.append(f"{flame} **{streak} wins in a row!** Reigning champion!")
 
-        # ── 2. KEY STAT — big, unmissable ──
-        desc.append(f"## ✨ {top_cnt} shinies caught {period_text}")
-        desc.append("")
+        embed.description = "\n".join(hero)
 
-        # ── 3. PODIUM — compact, runners up clearly subordinate ──
+        # ── Podium field ──
         if len(rows) > 1:
+            podium_lines = []
             for i, (uname, uid, cnt) in enumerate(rows[1:5], start=2):
                 display = f"<@{uid}>" if uid else (uname or "`[unknown]`")
                 medal = {2: "🥈", 3: "🥉"}.get(i, f"`{i}.`")
-                desc.append(f"{medal} {display} — {cnt}")
-            desc.append("")
+                podium_lines.append(f"{medal} {display} — **{cnt}**")
+            embed.add_field(name="Podium", value="\n".join(podium_lines), inline=False)
 
-        # ── 4. SERVER STAT ──
-        desc.append(f"**{total}** shinies caught across the server {period_text}")
-        desc.append("")
+        # ── Stats field ──
+        embed.add_field(
+            name="Server Total",
+            value=f"**{total}** shinies caught across the server {period_text}",
+            inline=False
+        )
 
-        # ── 5. HYPE + RESET ──
+        # ── Reset field ──
         hype = random.choice([
             "The hunt continues — who's next?",
             "Can anyone dethrone the champion?",
@@ -926,28 +929,15 @@ class StarboardCog(commands.Cog):
             "Trainers, the grind never stops!",
         ])
         next_ts = int(_next_reset_dt(period, now).timestamp())
-        desc.append(f"-# *{hype}* · Resets <t:{next_ts}:R>")
-
-        embed = discord.Embed(description="\n".join(desc), color=colour)
-
-        # Author bar — small title with trophy icon
-        embed.set_author(name=title_text, icon_url=avatar_url or discord.Embed.Empty)
-
-        # Thumbnail — champion's avatar, top-right, not oversized
-        if avatar_url:
-            embed.set_thumbnail(url=avatar_url)
+        embed.add_field(
+            name="Next Reset",
+            value=f"{hype}\nResets <t:{next_ts}:R>",
+            inline=False
+        )
 
         embed.set_footer(text="✨ Good luck, hunters!")
 
-        # Message content = champion mention (triggers ping + serves as headline)
-        # Show trophy/crown count beside winner name
-        if total_wins >= 1:
-            win_icons = trophy * min(total_wins, 10)
-            winner_line = f"{top_display} {win_icons}"
-        else:
-            winner_line = top_display
-
-        content = f"## {heading_text}\n{winner_line}"
+        content = heading_text
         return content, embed
 
     async def _post_top_catcher(
