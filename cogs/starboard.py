@@ -26,7 +26,7 @@ import logging
 import os
 import random
 import re
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 import discord
@@ -98,6 +98,28 @@ def _is_admin(interaction: discord.Interaction) -> bool:
         return True
     perms = getattr(interaction.user, "guild_permissions", None)
     return perms.administrator if perms else False
+
+
+def _next_reset_text(period: str, now: datetime) -> str:
+    """Human-readable countdown to next weekly (Monday 00:00 UTC) or monthly (1st 00:00 UTC) reset."""
+    if period == "week":
+        days_until_monday = (7 - now.weekday()) % 7
+        if days_until_monday == 0:
+            days_until_monday = 7
+        target = now.replace(hour=0, minute=0, second=0, microsecond=0) + timedelta(days=days_until_monday)
+    else:
+        # First of next month
+        if now.month == 12:
+            target = now.replace(year=now.year + 1, month=1, day=1, hour=0, minute=0, second=0, microsecond=0)
+        else:
+            target = now.replace(month=now.month + 1, day=1, hour=0, minute=0, second=0, microsecond=0)
+
+    delta = target - now
+    days = delta.days
+    hours = delta.seconds // 3600
+    if days > 0:
+        return f"{days}d {hours}h"
+    return f"{hours}h {(delta.seconds % 3600) // 60}m"
 
 
 # ── Cog ──────────────────────────────────────────────────────────────────────
@@ -399,7 +421,7 @@ class StarboardCog(commands.Cog):
 
         await interaction.response.defer()
         view = LeaderboardView(self, guild_id, interaction.guild, period)
-        embed = await view.build_leaderboard_embed()
+        embed = await view.build_leaderboard_embed(viewer_id=str(interaction.user.id))
         await interaction.followup.send(embed=embed, view=view)
 
     # ── Post command (admin, on-demand) ──────────────────────────────────────
@@ -429,34 +451,53 @@ class StarboardCog(commands.Cog):
             )
 
         label = "Weekly" if period == "week" else "Monthly"
+        cog = self
 
-        class ConfirmView(discord.ui.View):
+        class PostView(discord.ui.View):
             def __init__(self):
-                super().__init__(timeout=60)
-                self.confirmed = False
+                super().__init__(timeout=120)
+                self.action: str | None = None  # "post" | "preview" | None
 
-            @discord.ui.button(label=f"Post {label} Announcement", style=discord.ButtonStyle.green)
-            async def confirm(self, btn_interaction: discord.Interaction, button: discord.ui.Button):
+            @discord.ui.button(label="Preview (ephemeral)", emoji="👁️", style=discord.ButtonStyle.primary)
+            async def preview(self, btn_interaction: discord.Interaction, button: discord.ui.Button):
                 if not _is_admin(btn_interaction):
                     return await btn_interaction.response.send_message("🚫 Admin only.", ephemeral=True)
-                self.confirmed = True
+                result = await cog._build_announcement(btn_interaction.guild, guild_id, period, record=False)
+                if result is None:
+                    return await btn_interaction.response.send_message(
+                        "⚠️ No data to preview — no catches recorded for this period.", ephemeral=True,
+                    )
+                content, embed = result
+                await btn_interaction.response.send_message(
+                    f"-# Preview — this is how it will look in {announce_ch.mention}\n{content}",
+                    embed=embed,
+                    ephemeral=True,
+                )
+
+            @discord.ui.button(label=f"Post {label} Announcement", emoji="📢", style=discord.ButtonStyle.green)
+            async def post(self, btn_interaction: discord.Interaction, button: discord.ui.Button):
+                if not _is_admin(btn_interaction):
+                    return await btn_interaction.response.send_message("🚫 Admin only.", ephemeral=True)
+                self.action = "post"
                 self.stop()
                 await btn_interaction.response.defer()
 
             @discord.ui.button(label="Cancel", style=discord.ButtonStyle.grey)
             async def cancel(self, btn_interaction: discord.Interaction, button: discord.ui.Button):
+                self.action = None
                 self.stop()
                 await btn_interaction.response.send_message("Cancelled.", ephemeral=True)
 
-        view = ConfirmView()
+        view = PostView()
         await interaction.response.send_message(
-            f"Post the **{label}** top catcher announcement to {announce_ch.mention}?",
+            f"**{label} announcement** → {announce_ch.mention}\n"
+            f"-# Preview first, or post directly.",
             view=view,
             ephemeral=True,
         )
         await view.wait()
 
-        if not view.confirmed:
+        if view.action != "post":
             return
 
         try:
@@ -535,47 +576,50 @@ class StarboardCog(commands.Cog):
     async def _before_announcement_loop(self):
         await self.bot.wait_until_ready()
 
-    # ── Announcement builder (the beautiful one) ─────────────────────────────
+    # ── Announcement builder ──────────────────────────────────────────────────
 
-    async def _post_top_catcher(
+    async def _build_announcement(
         self,
         guild: discord.Guild,
         guild_id: str,
-        channel: discord.TextChannel,
         period: str,
-    ):
+        record: bool = True,
+    ) -> tuple[str, discord.Embed] | None:
+        """
+        Build the announcement message content and embed.
+        Returns (content, embed), or None if there is nothing to announce.
+        If record=True, saves the champion to history (only set False for previews).
+        """
         rows = await starboard_db.get_leaderboard(guild_id, period, limit=5)
         total = await starboard_db.get_catch_count(guild_id, period)
 
         if not rows or total == 0:
-            return  # Nothing to announce
+            return None
 
         top_uname, top_uid, top_cnt = rows[0]
         top_display = f"<@{top_uid}>" if top_uid else (top_uname or "Unknown Trainer")
 
-        # ── Build period label for champion_history ──
         now = datetime.now(timezone.utc)
         if period == "week":
             period_label_key = f"{now.isocalendar()[0]}-W{now.isocalendar()[1]:02d}"
         else:
             period_label_key = f"{now.year}-{now.month:02d}"
 
-        # Record the champion
-        await starboard_db.record_champion(
-            guild_id=guild_id,
-            period_type=period,
-            period_label=period_label_key,
-            user_id=top_uid,
-            user_name=top_uname,
-            catch_count=top_cnt,
-            total_catches=total,
-        )
+        if record:
+            await starboard_db.record_champion(
+                guild_id=guild_id,
+                period_type=period,
+                period_label=period_label_key,
+                user_id=top_uid,
+                user_name=top_uname,
+                catch_count=top_cnt,
+                total_catches=total,
+            )
 
-        # Fetch streak & win data
         streak = await starboard_db.get_champion_streak(guild_id, period, top_uid)
         total_wins = await starboard_db.get_total_wins(guild_id, period, top_uid)
 
-        # ── Resolve avatar URL ──
+        # ── Resolve avatar ──
         avatar_url = None
         if top_uid:
             try:
@@ -585,96 +629,76 @@ class StarboardCog(commands.Cog):
             except (discord.NotFound, discord.HTTPException):
                 pass
 
-        # ── Theme per period ──
+        # ── Theme ──
         if period == "week":
-            colour = 0xF4D03F  # Gold
-            header_emoji = "🏆"
-            title = f"{header_emoji} WEEKLY SHINY CHAMPION {header_emoji}"
+            colour = 0xFFD700
+            title = "WEEKLY SHINY CHAMPION"
             period_text = "this week"
-            crown_bar = "━━━━━ ✨ WEEK'S FINEST ✨ ━━━━━"
-            trophy_gif = "https://media1.tenor.com/m/bMLVnMeFPBgAAAAd/ash-ketchum-pokemon.gif"
         else:
-            colour = 0xE74C3C  # Red/gold
-            header_emoji = "👑"
-            title = f"{header_emoji} MONTHLY SHINY LEGEND {header_emoji}"
+            colour = 0xFF4500
+            title = "MONTHLY SHINY LEGEND"
             period_text = "this month"
-            crown_bar = "━━━━━ 👑 MONTH'S LEGEND 👑 ━━━━━"
-            trophy_gif = "https://media1.tenor.com/m/bMLVnMeFPBgAAAAd/ash-ketchum-pokemon.gif"
 
-        # ── Build the main embed ──
-        lines = []
-        lines.append(f"```ansi\n\u001b[1;33m{crown_bar}\u001b[0m\n```")
-        lines.append(f"### {top_display}")
-        lines.append(f"**{top_cnt}** shiny catches {period_text}!")
-        lines.append("")
+        # ── HERO SECTION ──
+        desc_lines = []
+        desc_lines.append(f"# ✨ {top_cnt} Shinies Caught")
+        desc_lines.append("")
 
-        # Streak & titles
-        badges = []
         if streak >= 2:
             flame = "🔥" * min(streak, 5)
-            badges.append(f"{flame} **{streak}-{period} WIN STREAK!** {flame}")
+            desc_lines.append(f"{flame} **{streak}-{period} win streak!**")
         if total_wins >= 2:
-            badges.append(f"🏅 **{total_wins}x Champion** ({period.capitalize()})")
-        if streak >= 3:
-            badges.append("💎 **UNSTOPPABLE**")
-        if streak >= 5:
-            badges.append("⚡ **LEGENDARY HUNTER**")
+            desc_lines.append(f"🏅 **{total_wins}x Champion**")
+        if streak >= 2 or total_wins >= 2:
+            desc_lines.append("")
 
-        if badges:
-            lines.append("\n".join(badges))
-            lines.append("")
-
-        # Runner-ups with a visual bar chart
+        # ── PODIUM ──
         if len(rows) > 1:
-            lines.append("**── Podium ──**")
-            medals = ["🥇", "🥈", "🥉", "4️⃣", "5️⃣"]
-            max_cnt = rows[0][2]
-            for i, (uname, uid, cnt) in enumerate(rows[:5]):
-                medal = medals[i] if i < len(medals) else f"`{i+1}.`"
+            podium = []
+            for i, (uname, uid, cnt) in enumerate(rows[1:5], start=2):
                 display = f"<@{uid}>" if uid else (uname or "Unknown")
-                bar_len = max(1, round((cnt / max_cnt) * 10)) if max_cnt > 0 else 1
-                bar = "▓" * bar_len + "░" * (10 - bar_len)
-                lines.append(f"{medal} {display}\n` {bar} ` **{cnt}** ✨")
-            lines.append("")
+                if i == 2:
+                    podium.append(f"🥈 {display} — **{cnt}**")
+                elif i == 3:
+                    podium.append(f"🥉 {display} — **{cnt}**")
+                else:
+                    podium.append(f"` {i}. ` {display} — **{cnt}**")
+            desc_lines.append("\n".join(podium))
+            desc_lines.append("")
 
-        # Hype lines
+        # ── SERVER STAT + HYPE ──
+        desc_lines.append(f"**{total}** total shinies caught across the server {period_text}")
         hype_lines = [
-            "The hunt never stops — who's next? 👀",
-            "Can anyone dethrone the champion? 🔥",
-            "Trainers, the competition is heating up! 🌟",
-            "The shiny gods have spoken! ✨",
-            "What a performance! Absolute legend! 💫",
-            "The grind pays off — keep hunting! 🎯",
+            "The hunt never stops — who's next?",
+            "Can anyone dethrone the champion?",
+            "The competition is heating up!",
+            "The shiny gods have spoken!",
+            "Absolute legend. The grind pays off!",
         ]
-        lines.append(f"*{random.choice(hype_lines)}*")
+        desc_lines.append(f"-# *{random.choice(hype_lines)}*")
 
-        embed = discord.Embed(
-            title=title,
-            description="\n".join(lines),
-            color=colour,
-        )
-
-        # Champion's avatar as the big image
+        embed = discord.Embed(description="\n".join(desc_lines), color=colour)
         if avatar_url:
-            embed.set_thumbnail(url=avatar_url)
-
-        # Trophy GIF as the main image
-        embed.set_image(url=trophy_gif)
-
-        # Stats footer
-        footer_parts = [f"✨ {total} total caught {period_text}"]
-        if streak >= 2:
-            footer_parts.append(f"🔥 {streak}-streak")
-        if total_wins >= 2:
-            footer_parts.append(f"🏅 {total_wins} titles")
-        embed.set_footer(text=" • ".join(footer_parts) + " • Keep going, trainers!")
-
+            embed.set_image(url=avatar_url)
+        reset_text = _next_reset_text(period, now)
+        embed.set_footer(text=f"Next reset: {reset_text}")
         embed.timestamp = now
 
-        await channel.send(
-            f"# 📢 {title}\nCongratulations to {top_display}! 🎉",
-            embed=embed,
-        )
+        content = f"## 🏆 {title}\n{top_display}"
+        return content, embed
+
+    async def _post_top_catcher(
+        self,
+        guild: discord.Guild,
+        guild_id: str,
+        channel: discord.TextChannel,
+        period: str,
+    ):
+        result = await self._build_announcement(guild, guild_id, period, record=True)
+        if result is None:
+            return
+        content, embed = result
+        await channel.send(content, embed=embed)
         log.info(f"Posted {period} announcement in #{channel.name} for {guild.name}")
 
 
@@ -779,10 +803,11 @@ class LeaderboardView(discord.ui.View):
 
     # ── Embed builders ───────────────────────────────────────────────────
 
-    async def build_leaderboard_embed(self) -> discord.Embed:
+    async def build_leaderboard_embed(self, viewer_id: str = "") -> discord.Embed:
         rows = await starboard_db.get_leaderboard(self.guild_id, self.period, limit=10)
         total = await starboard_db.get_catch_count(self.guild_id, self.period)
         label = _PERIOD_LABELS.get(self.period, self.period)
+        now = datetime.now(timezone.utc)
 
         if not rows:
             return discord.Embed(
@@ -791,24 +816,43 @@ class LeaderboardView(discord.ui.View):
                 color=0xFFD700,
             )
 
-        max_cnt = rows[0][2]
+        # ── Header: server-wide stat ──
         lines = []
+        lines.append(f"**{total}** shinies caught {label.lower()} across the server")
+        lines.append("")
+
+        # ── Ranked list: clean, no bars ──
         for i, (uname, uid, cnt) in enumerate(rows):
-            medal = _MEDALS[i] if i < len(_MEDALS) else f"`{i+1}.`"
+            medal = _MEDALS[i] if i < len(_MEDALS) else f"` {i+1}. `"
             display = f"<@{uid}>" if uid else (uname or "Unknown Trainer")
-            bar_len = max(1, round((cnt / max_cnt) * 12)) if max_cnt > 0 else 1
-            bar = "▓" * bar_len + "░" * (12 - bar_len)
-            lines.append(f"{medal} {display}\n` {bar} ` **{cnt}** ✨")
+            lines.append(f"{medal} {display} — **{cnt}** ✨")
+
+        # ── Viewer's rank (if not in top 10) ──
+        if viewer_id:
+            in_top = any(r[1] == viewer_id for r in rows)
+            if not in_top:
+                all_rows = await starboard_db.get_leaderboard(self.guild_id, self.period, limit=100)
+                for i, (uname, uid, cnt) in enumerate(all_rows):
+                    if uid == viewer_id:
+                        lines.append("")
+                        lines.append(f"-# You are **#{i+1}** with **{cnt}** catches")
+                        break
 
         embed = discord.Embed(
             title=f"✨ Top Shiny Hunters — {label}",
             description="\n".join(lines),
             color=0xFFD700,
         )
-        embed.set_footer(text=f"✨ {total} total caught {label.lower()} • Use buttons to explore!")
-        embed.timestamp = datetime.now(timezone.utc)
 
-        # Set #1's avatar as thumbnail
+        # Next reset in footer (only for week/month, not all-time)
+        if self.period in ("week", "month"):
+            reset = _next_reset_text(self.period, now)
+            embed.set_footer(text=f"Resets in {reset}")
+        else:
+            embed.set_footer(text="All-time standings")
+        embed.timestamp = now
+
+        # #1's avatar as thumbnail
         top_uid = rows[0][1]
         if top_uid:
             try:
@@ -970,7 +1014,7 @@ class LeaderboardView(discord.ui.View):
         async def callback(interaction: discord.Interaction):
             self.period = period
             self._update_buttons()
-            embed = await self.build_leaderboard_embed()
+            embed = await self.build_leaderboard_embed(viewer_id=str(interaction.user.id))
             await interaction.response.edit_message(embed=embed, view=self)
         return callback
 
@@ -996,7 +1040,7 @@ class LeaderboardView(discord.ui.View):
     async def _switch_to_leaderboard(self, interaction: discord.Interaction):
         self.mode = _MODE_LEADERBOARD
         self._update_buttons()
-        embed = await self.build_leaderboard_embed()
+        embed = await self.build_leaderboard_embed(viewer_id=str(interaction.user.id))
         await interaction.response.edit_message(embed=embed, view=self)
 
     def _make_hist_type_callback(self, hist_type: str):
