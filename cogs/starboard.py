@@ -109,20 +109,20 @@ def _is_privileged(interaction: discord.Interaction) -> bool:
     return False
 
 
-def _next_reset_text(period: str, now: datetime) -> str:
-    """Human-readable countdown to next weekly (Monday 00:00 UTC) or monthly (1st 00:00 UTC) reset."""
+def _next_reset_dt(period: str, now: datetime) -> datetime:
+    """Return the next reset datetime (Monday 00:00 UTC for week, 1st 00:00 UTC for month)."""
     if period == "week":
-        days_until_monday = (7 - now.weekday()) % 7
-        if days_until_monday == 0:
-            days_until_monday = 7
-        target = now.replace(hour=0, minute=0, second=0, microsecond=0) + timedelta(days=days_until_monday)
+        days_until_monday = (7 - now.weekday()) % 7 or 7
+        return now.replace(hour=0, minute=0, second=0, microsecond=0) + timedelta(days=days_until_monday)
     else:
-        # First of next month
         if now.month == 12:
-            target = now.replace(year=now.year + 1, month=1, day=1, hour=0, minute=0, second=0, microsecond=0)
-        else:
-            target = now.replace(month=now.month + 1, day=1, hour=0, minute=0, second=0, microsecond=0)
+            return now.replace(year=now.year + 1, month=1, day=1, hour=0, minute=0, second=0, microsecond=0)
+        return now.replace(month=now.month + 1, day=1, hour=0, minute=0, second=0, microsecond=0)
 
+
+def _next_reset_text(period: str, now: datetime) -> str:
+    """Human-readable countdown to next reset (used by leaderboard view)."""
+    target = _next_reset_dt(period, now)
     delta = target - now
     days = delta.days
     hours = delta.seconds // 3600
@@ -503,13 +503,19 @@ class StarboardCog(commands.Cog):
             )
 
         channel_name = _build_channel_name(cfg)
+        weekly_icon = "✅" if cfg.get("weekly_enabled", True) else "⏸️"
+        monthly_icon = "✅" if cfg.get("monthly_enabled", True) else "⏸️"
+        announce = f"<#{cfg['announce_channel']}>" if cfg.get("announce_channel") else "*(not set)*"
         await interaction.response.send_message(
             f"**Starboard Config**\n"
             f"• Channel: <#{cfg['channel_id']}>\n"
             f"• Prefix: `{cfg['prefix'] or '(none)'}`\n"
             f"• Suffix: `{cfg['suffix'] or '(none)'}`\n"
             f"• Shiny count: **{cfg['shiny_count']}**\n"
-            f"• Channel name: `{channel_name}`",
+            f"• Channel name: `{channel_name}`\n"
+            f"• Announce channel: {announce}\n"
+            f"• Weekly announcements: {weekly_icon}\n"
+            f"• Monthly announcements: {monthly_icon}",
             ephemeral=True,
         )
 
@@ -653,6 +659,38 @@ class StarboardCog(commands.Cog):
             ephemeral=True,
         )
 
+    @starboard.command(name="toggleannounce", description="Enable or disable weekly/monthly automatic announcements (admin only)")
+    @app_commands.describe(period="Which announcement to toggle")
+    @app_commands.choices(period=[
+        app_commands.Choice(name="Weekly", value="week"),
+        app_commands.Choice(name="Monthly", value="month"),
+    ])
+    async def sb_toggleannounce(self, interaction: discord.Interaction, period: str):
+        if not _is_admin(interaction):
+            return await interaction.response.send_message("🚫 Admin only.", ephemeral=True)
+
+        guild_id = str(interaction.guild_id)
+        cfg = starboard_db.get_config(guild_id)
+        if not cfg:
+            return await interaction.response.send_message(
+                "⚠️ No starboard configured. Use `/starboard init` first.", ephemeral=True,
+            )
+
+        key = "weekly_enabled" if period == "week" else "monthly_enabled"
+        label = "Weekly" if period == "week" else "Monthly"
+        current = cfg.get(key, True)
+        new_state = not current
+
+        ok = await starboard_db.set_announcement_toggle(guild_id, period, new_state)
+        if not ok:
+            return await interaction.response.send_message("⚠️ No starboard configured.", ephemeral=True)
+
+        state_str = "✅ **Enabled**" if new_state else "⏸️ **Disabled**"
+        await interaction.response.send_message(
+            f"{state_str} — {label} announcements are now {'on' if new_state else 'off'}.",
+            ephemeral=True,
+        )
+
     # ── Weekly / Monthly announcement scheduler ──────────────────────────────
 
     @tasks.loop(minutes=30)
@@ -680,9 +718,9 @@ class StarboardCog(commands.Cog):
                 continue
 
             try:
-                if is_weekly:
+                if is_weekly and cfg.get("weekly_enabled", True):
                     await self._post_top_catcher(guild, guild_id, announce_ch, "week")
-                if is_monthly:
+                if is_monthly and cfg.get("monthly_enabled", True):
                     await self._post_top_catcher(guild, guild_id, announce_ch, "month")
             except Exception as e:
                 log.error(f"Announcement failed for {guild.name}: {e}")
@@ -795,9 +833,17 @@ class StarboardCog(commands.Cog):
         embed = discord.Embed(description="\n".join(desc_lines), color=colour)
         if avatar_url:
             embed.set_image(url=avatar_url)
-        reset_text = _next_reset_text(period, now)
-        embed.set_footer(text=f"Next reset: {reset_text}")
-        embed.timestamp = now
+
+        # ── Footer: Discord timestamp for next reset (live countdown), no embed timestamp ──
+        next_reset_dt = _next_reset_dt(period, now)
+        unix_ts = int(next_reset_dt.timestamp())
+        # Append reset as a Discord dynamic timestamp at the end of description
+        embed.description += f"\n\n-# 🔄 Next reset: <t:{unix_ts}:R>"
+
+        # Footer shows viewer's catches if we know who they are, else hype line
+        # Since this is a channel post (no viewer context), always use hype
+        embed.set_footer(text="✨ Good luck, hunters!")
+        # No embed.timestamp — avoids the "Today at X:XX PM" clutter
 
         content = f"## 🏆 {title}\n{top_display}"
         return content, embed

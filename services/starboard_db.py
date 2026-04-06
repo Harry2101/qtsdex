@@ -74,12 +74,17 @@ async def init_db():
                 ON champion_history (guild_id, user_id);
         """)
         await db.commit()
-        # Add announce_channel column if upgrading from older schema
-        try:
-            await db.execute("ALTER TABLE starboard_config ADD COLUMN announce_channel TEXT NOT NULL DEFAULT ''")
-            await db.commit()
-        except Exception:
-            pass  # Column already exists
+        # Migrations for older schemas
+        for migration in [
+            "ALTER TABLE starboard_config ADD COLUMN announce_channel TEXT NOT NULL DEFAULT ''",
+            "ALTER TABLE starboard_config ADD COLUMN weekly_enabled INTEGER NOT NULL DEFAULT 1",
+            "ALTER TABLE starboard_config ADD COLUMN monthly_enabled INTEGER NOT NULL DEFAULT 1",
+        ]:
+            try:
+                await db.execute(migration)
+                await db.commit()
+            except Exception:
+                pass  # Column already exists
 
         # Deduplicate shiny_catches: keep earliest row per (guild_id, message_id)
         await db.execute("""
@@ -100,7 +105,9 @@ async def init_db():
         await db.commit()
 
         # Pre-load config cache
-        async with db.execute("SELECT guild_id, channel_id, prefix, suffix, shiny_count, announce_channel FROM starboard_config") as cur:
+        async with db.execute(
+            "SELECT guild_id, channel_id, prefix, suffix, shiny_count, announce_channel, weekly_enabled, monthly_enabled FROM starboard_config"
+        ) as cur:
             async for row in cur:
                 _config_cache[row[0]] = {
                     "channel_id": row[1],
@@ -108,6 +115,8 @@ async def init_db():
                     "suffix": row[3],
                     "shiny_count": row[4],
                     "announce_channel": row[5] or "",
+                    "weekly_enabled": bool(row[6]),
+                    "monthly_enabled": bool(row[7]),
                 }
 
 
@@ -122,17 +131,19 @@ async def set_config(guild_id: str, channel_id: str, prefix: str = "", suffix: s
     """Set or update starboard config for a guild."""
     existing = _config_cache.get(guild_id, {})
     announce_channel = existing.get("announce_channel", "")
+    weekly_enabled = existing.get("weekly_enabled", True)
+    monthly_enabled = existing.get("monthly_enabled", True)
     async with _write_lock:
         async with aiosqlite.connect(DB_PATH) as db:
             await db.execute(
-                """INSERT INTO starboard_config (guild_id, channel_id, prefix, suffix, shiny_count, announce_channel)
-                   VALUES (?, ?, ?, ?, ?, ?)
+                """INSERT INTO starboard_config (guild_id, channel_id, prefix, suffix, shiny_count, announce_channel, weekly_enabled, monthly_enabled)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                    ON CONFLICT(guild_id) DO UPDATE SET
                        channel_id=excluded.channel_id,
                        prefix=excluded.prefix,
                        suffix=excluded.suffix,
                        shiny_count=excluded.shiny_count""",
-                (guild_id, channel_id, prefix, suffix, shiny_count, announce_channel),
+                (guild_id, channel_id, prefix, suffix, shiny_count, announce_channel, weekly_enabled, monthly_enabled),
             )
             await db.commit()
     _config_cache[guild_id] = {
@@ -141,6 +152,8 @@ async def set_config(guild_id: str, channel_id: str, prefix: str = "", suffix: s
         "suffix": suffix,
         "shiny_count": shiny_count,
         "announce_channel": announce_channel,
+        "weekly_enabled": weekly_enabled,
+        "monthly_enabled": monthly_enabled,
     }
 
 
@@ -207,6 +220,23 @@ async def set_announce_channel(guild_id: str, channel_id: str) -> bool:
             )
             await db.commit()
     cfg["announce_channel"] = channel_id
+    return True
+
+
+async def set_announcement_toggle(guild_id: str, period_type: str, enabled: bool) -> bool:
+    """Enable or disable weekly/monthly announcements. period_type: 'week' or 'month'. Returns False if no config."""
+    cfg = _config_cache.get(guild_id)
+    if not cfg:
+        return False
+    col = "weekly_enabled" if period_type == "week" else "monthly_enabled"
+    async with _write_lock:
+        async with aiosqlite.connect(DB_PATH) as db:
+            await db.execute(
+                f"UPDATE starboard_config SET {col}=? WHERE guild_id=?",
+                (1 if enabled else 0, guild_id),
+            )
+            await db.commit()
+    cfg[col] = enabled
     return True
 
 
