@@ -865,6 +865,7 @@ class StarboardCog(commands.Cog):
             colour = 0xFFD700
             trophy = "🏆"
             title_text = "WEEKLY SHINY CHAMPION"
+            first_win_text = "Congratulations on your **FIRST TROPHY**!"
             heading_text = "🏆 WEEKLY SHINY CHAMPION 🏆"
             period_text = "this week"
             trophy_msg = "Earned a **Weekly Trophy** 🏆"
@@ -872,6 +873,7 @@ class StarboardCog(commands.Cog):
             colour = 0xFF4500
             trophy = "👑"
             title_text = "MONTHLY SHINY LEGEND"
+            first_win_text = "Congratulations on your **FIRST CROWN**!"
             heading_text = "👑 MONTHLY SHINY LEGEND 👑"
             period_text = "this month"
             trophy_msg = "Earned a **Monthly Crown** 👑"
@@ -891,7 +893,7 @@ class StarboardCog(commands.Cog):
         # When record=False (preview) first-timers still have total_wins==0.
         desc.append(trophy_msg)
         if total_wins <= 1 and streak <= 1:
-            desc.append("🌟 Congratulations on your **FIRST TROPHY**! A star is born! 🌟")
+            desc.append(first_win_text )
         elif streak >= 2:
             flame = "🔥" * min(streak, 5)
             desc.append(f"{flame} **{streak} wins in a row!** Reigning champion!")
