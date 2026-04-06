@@ -708,7 +708,7 @@ class StarboardCog(commands.Cog):
         if len(rows) > 1:
             podium = []
             for i, (uname, uid, cnt) in enumerate(rows[1:5], start=2):
-                display = f"<@{uid}>" if uid else (uname or "Unknown")
+                display = f"<@{uid}>" if uid else (uname or "`[unknown]`")
                 if i == 2:
                     podium.append(f"🥈 {display} — **{cnt}**")
                 elif i == 3:
@@ -876,7 +876,7 @@ class LeaderboardView(discord.ui.View):
         # ── Ranked list: clean, no bars ──
         for i, (uname, uid, cnt) in enumerate(rows):
             medal = _MEDALS[i] if i < len(_MEDALS) else f"` {i+1}. `"
-            display = f"<@{uid}>" if uid else (uname or "Unknown Trainer")
+            display = f"<@{uid}>" if uid else (uname or "`[unknown — use /inspect]`")
             lines.append(f"{medal} {display} — **{cnt}** ✨")
 
         # ── Viewer's rank (if not in top 10) ──
@@ -935,7 +935,7 @@ class LeaderboardView(discord.ui.View):
 
         lines = []
         for period_label, uname, uid, catch_count, total_catches in records:
-            display = f"<@{uid}>" if uid else (uname or "Unknown")
+            display = f"<@{uid}>" if uid else (uname or "`[unknown]`")
             lines.append(
                 f"**{period_label}** — 🏆 {display}\n"
                 f"` {catch_count} catches ` out of {total_catches} total"
@@ -964,7 +964,7 @@ class LeaderboardView(discord.ui.View):
         lines = []
         for i, (uname, uid, wins) in enumerate(top):
             medal = _MEDALS[i] if i < len(_MEDALS) else f"`{i+1}.`"
-            display = f"<@{uid}>" if uid else (uname or "Unknown")
+            display = f"<@{uid}>" if uid else (uname or "`[unknown]`")
             trophy = "🏆" * min(wins, 5)
             lines.append(f"{medal} {display} — **{wins}** title{'s' if wins != 1 else ''} {trophy}")
 
