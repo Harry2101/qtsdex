@@ -12,6 +12,7 @@ Slash commands (grouped under /starboard, admin-only):
   /starboard setcount        — manually override the shiny count (admin/owner only)
   /starboard remove          — unlink the starboard channel
   /starboard announcechannel — set channel for weekly/monthly top catcher announcements
+  /starboard announceping    — set a role to ping in champion announcements
 
 Auto-behaviour:
   When the Operation Dex bot posts a shiny catch embed in the starboard channel,
@@ -506,6 +507,7 @@ class StarboardCog(commands.Cog):
         weekly_icon = "✅" if cfg.get("weekly_enabled", True) else "⏸️"
         monthly_icon = "✅" if cfg.get("monthly_enabled", True) else "⏸️"
         announce = f"<#{cfg['announce_channel']}>" if cfg.get("announce_channel") else "*(not set)*"
+        ping_role = f"<@&{cfg['announce_ping_role']}>" if cfg.get("announce_ping_role") else "*(not set)*"
         await interaction.response.send_message(
             f"**Starboard Config**\n"
             f"• Channel: <#{cfg['channel_id']}>\n"
@@ -514,6 +516,7 @@ class StarboardCog(commands.Cog):
             f"• Shiny count: **{cfg['shiny_count']}**\n"
             f"• Channel name: `{channel_name}`\n"
             f"• Announce channel: {announce}\n"
+            f"• Announce ping role: {ping_role}\n"
             f"• Weekly announcements: {weekly_icon}\n"
             f"• Monthly announcements: {monthly_icon}",
             ephemeral=True,
@@ -691,6 +694,35 @@ class StarboardCog(commands.Cog):
             ephemeral=True,
         )
 
+    @starboard.command(name="announceping", description="Set a role to ping in champion announcements (omit to clear)")
+    @app_commands.describe(role="Role to mention in weekly/monthly champion posts (omit to clear)")
+    async def sb_announce_ping(self, interaction: discord.Interaction, role: Optional[discord.Role] = None):
+        if not _is_admin(interaction):
+            return await interaction.response.send_message("🚫 Admin only.", ephemeral=True)
+
+        guild_id = str(interaction.guild_id)
+        cfg = starboard_db.get_config(guild_id)
+        if not cfg:
+            return await interaction.response.send_message(
+                "⚠️ No starboard configured. Use `/starboard init` first.", ephemeral=True,
+            )
+
+        if role is None:
+            ok = await starboard_db.set_announce_ping_role(guild_id, "")
+            if not ok:
+                return await interaction.response.send_message("⚠️ No starboard configured.", ephemeral=True)
+            return await interaction.response.send_message(
+                "✅ Announcement ping role cleared. No role will be mentioned.", ephemeral=True,
+            )
+
+        ok = await starboard_db.set_announce_ping_role(guild_id, str(role.id))
+        if not ok:
+            return await interaction.response.send_message("⚠️ No starboard configured.", ephemeral=True)
+        await interaction.response.send_message(
+            f"✅ Champion announcements will now ping {role.mention}!",
+            ephemeral=True,
+        )
+
     # ── Weekly / Monthly announcement scheduler ──────────────────────────────
 
     @tasks.loop(minutes=30)
@@ -787,12 +819,14 @@ class StarboardCog(commands.Cog):
             colour = 0xFFD700
             trophy = "🏆"
             title_text = "WEEKLY SHINY CHAMPION"
+            heading_text = "🏆 WEEKLY SHINY CHAMPION 🏆"
             period_text = "this week"
             trophy_msg = "Earned a **Weekly Trophy** 🏆"
         else:
             colour = 0xFF4500
             trophy = "👑"
             title_text = "MONTHLY SHINY LEGEND"
+            heading_text = "👑 MONTHLY SHINY LEGEND 👑"
             period_text = "this month"
             trophy_msg = "Earned a **Monthly Crown** 👑"
 
@@ -809,7 +843,7 @@ class StarboardCog(commands.Cog):
         # ── 1. TROPHY AWARD — the gamification moment ──
         desc.append(trophy_msg)
         if total_wins == 1 and streak <= 1:
-            desc.append("Their **first title** — a star is born! 🌟")
+            desc.append("🌟 Congratulations on your **first crown**! A star is born! 🌟")
         elif streak >= 2:
             flame = "🔥" * min(streak, 5)
             desc.append(f"{flame} **{streak} wins in a row!** Reigning champion!")
@@ -856,7 +890,21 @@ class StarboardCog(commands.Cog):
         embed.set_footer(text="✨ Good luck, hunters!")
 
         # Message content = champion mention (triggers ping + serves as headline)
-        content = f"## {trophy} {title_text}\n{top_display}"
+        # Show trophy/crown count beside winner name
+        if total_wins >= 1:
+            win_icons = trophy * min(total_wins, 10)
+            winner_line = f"{top_display} {win_icons}"
+        else:
+            winner_line = top_display
+
+        # Ping the configured announcement role if set
+        cfg = starboard_db.get_config(guild_id)
+        ping_role_id = cfg.get("announce_ping_role", "") if cfg else ""
+        role_ping = f"<@&{ping_role_id}>" if ping_role_id else ""
+
+        content = f"## {heading_text}\n{winner_line}"
+        if role_ping:
+            content += f"\n{role_ping}"
         return content, embed
 
     async def _post_top_catcher(

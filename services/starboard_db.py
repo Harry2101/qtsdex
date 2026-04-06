@@ -79,6 +79,7 @@ async def init_db():
             "ALTER TABLE starboard_config ADD COLUMN announce_channel TEXT NOT NULL DEFAULT ''",
             "ALTER TABLE starboard_config ADD COLUMN weekly_enabled INTEGER NOT NULL DEFAULT 1",
             "ALTER TABLE starboard_config ADD COLUMN monthly_enabled INTEGER NOT NULL DEFAULT 1",
+            "ALTER TABLE starboard_config ADD COLUMN announce_ping_role TEXT NOT NULL DEFAULT ''",
         ]:
             try:
                 await db.execute(migration)
@@ -106,7 +107,7 @@ async def init_db():
 
         # Pre-load config cache
         async with db.execute(
-            "SELECT guild_id, channel_id, prefix, suffix, shiny_count, announce_channel, weekly_enabled, monthly_enabled FROM starboard_config"
+            "SELECT guild_id, channel_id, prefix, suffix, shiny_count, announce_channel, weekly_enabled, monthly_enabled, announce_ping_role FROM starboard_config"
         ) as cur:
             async for row in cur:
                 _config_cache[row[0]] = {
@@ -117,6 +118,7 @@ async def init_db():
                     "announce_channel": row[5] or "",
                     "weekly_enabled": bool(row[6]),
                     "monthly_enabled": bool(row[7]),
+                    "announce_ping_role": row[8] or "",
                 }
 
 
@@ -133,17 +135,18 @@ async def set_config(guild_id: str, channel_id: str, prefix: str = "", suffix: s
     announce_channel = existing.get("announce_channel", "")
     weekly_enabled = existing.get("weekly_enabled", True)
     monthly_enabled = existing.get("monthly_enabled", True)
+    announce_ping_role = existing.get("announce_ping_role", "")
     async with _write_lock:
         async with aiosqlite.connect(DB_PATH) as db:
             await db.execute(
-                """INSERT INTO starboard_config (guild_id, channel_id, prefix, suffix, shiny_count, announce_channel, weekly_enabled, monthly_enabled)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """INSERT INTO starboard_config (guild_id, channel_id, prefix, suffix, shiny_count, announce_channel, weekly_enabled, monthly_enabled, announce_ping_role)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                    ON CONFLICT(guild_id) DO UPDATE SET
                        channel_id=excluded.channel_id,
                        prefix=excluded.prefix,
                        suffix=excluded.suffix,
                        shiny_count=excluded.shiny_count""",
-                (guild_id, channel_id, prefix, suffix, shiny_count, announce_channel, weekly_enabled, monthly_enabled),
+                (guild_id, channel_id, prefix, suffix, shiny_count, announce_channel, weekly_enabled, monthly_enabled, announce_ping_role),
             )
             await db.commit()
     _config_cache[guild_id] = {
@@ -154,6 +157,7 @@ async def set_config(guild_id: str, channel_id: str, prefix: str = "", suffix: s
         "announce_channel": announce_channel,
         "weekly_enabled": weekly_enabled,
         "monthly_enabled": monthly_enabled,
+        "announce_ping_role": announce_ping_role,
     }
 
 
@@ -237,6 +241,22 @@ async def set_announcement_toggle(guild_id: str, period_type: str, enabled: bool
             )
             await db.commit()
     cfg[col] = enabled
+    return True
+
+
+async def set_announce_ping_role(guild_id: str, role_id: str) -> bool:
+    """Set the role to ping in weekly/monthly champion announcements. Returns False if no config."""
+    cfg = _config_cache.get(guild_id)
+    if not cfg:
+        return False
+    async with _write_lock:
+        async with aiosqlite.connect(DB_PATH) as db:
+            await db.execute(
+                "UPDATE starboard_config SET announce_ping_role=? WHERE guild_id=?",
+                (role_id, guild_id),
+            )
+            await db.commit()
+    cfg["announce_ping_role"] = role_id
     return True
 
 
