@@ -934,7 +934,7 @@ class StarboardCog(commands.Cog):
             podium_lines = []
             for i, (uname, uid, cnt) in enumerate(rows[1:5], start=2):
                 display = f"<@{uid}>" if uid else (uname or "`[unknown]`")
-                medal = {2: "🥈", 3: "🥉"}.get(i, f"`{i}.`")
+                medal = {2: "🥈", 3: "🥉"}.get(i, f"`{i}✨.`")
                 podium_lines.append(f"{medal} {display} — **{cnt}**")
 
             embed.add_field(
@@ -944,8 +944,8 @@ class StarboardCog(commands.Cog):
             )
 
         embed.add_field(
-            name="🌐 Server Total",
-            value=f"**{total}** total shinies",
+            name="🌐 Total",
+            value=f"**{total}** ✨",
             inline=True,
         )
 
