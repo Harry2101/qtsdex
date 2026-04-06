@@ -891,7 +891,7 @@ class StarboardCog(commands.Cog):
         # When record=False (preview) first-timers still have total_wins==0.
         desc.append(trophy_msg)
         if total_wins <= 1 and streak <= 1:
-            desc.append("🌟 Congratulations on your **first crown**! A star is born! 🌟")
+            desc.append("🌟 Congratulations on your **FIRST TROPHY**! A star is born! 🌟")
         elif streak >= 2:
             flame = "🔥" * min(streak, 5)
             desc.append(f"{flame} **{streak} wins in a row!** Reigning champion!")
