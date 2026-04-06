@@ -146,6 +146,34 @@ class StarboardCog(commands.Cog):
         self._rename_loop.cancel()
         self._announcement_loop.cancel()
 
+
+    async def _get_total_wins(self, guild_id: str, period: str, user_id: str) -> int:
+        """Count how many titles this user has won for the given period."""
+        if not user_id:
+            return 0
+
+        records = await starboard_db.get_champion_history(guild_id, period, limit=5000, offset=0)
+        return sum(1 for _, _, uid, _, _ in records if uid == user_id)
+
+    async def _get_current_streak(self, guild_id: str, period: str, user_id: str) -> int:
+        """
+        Count the user's current streak from most recent backwards.
+        Champion history is assumed to be returned newest first.
+        """
+        if not user_id:
+            return 0
+
+        records = await starboard_db.get_champion_history(guild_id, period, limit=5000, offset=0)
+
+        streak = 0
+        for _, _, uid, _, _ in records:
+            if uid == user_id:
+                streak += 1
+            else:
+                break
+
+        return streak
+
     # ── Batched channel rename (every 5 min) ─────────────────────────────────
 
     @tasks.loop(minutes=5)
@@ -847,8 +875,8 @@ class StarboardCog(commands.Cog):
                 total_catches=total,
             )
 
-        total_wins = await starboard_db.get_champion_win_count(guild_id, period, top_uid)
-        streak = await starboard_db.get_champion_streak(guild_id, period, top_uid)
+        total_wins = await self._get_total_wins(guild_id, period, top_uid)
+        streak = await self._get_current_streak(guild_id, period, top_uid)
 
         avatar_url = None
         if top_uid:
