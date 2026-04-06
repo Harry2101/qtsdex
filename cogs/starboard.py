@@ -100,6 +100,15 @@ def _is_admin(interaction: discord.Interaction) -> bool:
     return perms.administrator if perms else False
 
 
+def _is_privileged(interaction: discord.Interaction) -> bool:
+    """Bot owner OR server owner only."""
+    if interaction.user.id == OWNER_ID:
+        return True
+    if interaction.guild and interaction.guild.owner_id == interaction.user.id:
+        return True
+    return False
+
+
 def _next_reset_text(period: str, now: datetime) -> str:
     """Human-readable countdown to next weekly (Monday 00:00 UTC) or monthly (1st 00:00 UTC) reset."""
     if period == "week":
@@ -347,6 +356,60 @@ class StarboardCog(commands.Cog):
             f"• Fixed **{updated}** timestamp(s)\n"
             f"• Added **{new_records}** missing record(s)",
             ephemeral=True,
+        )
+
+    @starboard.command(name="clearchampions", description="Wipe champion history for a period (server owner / bot owner only)")
+    @app_commands.describe(period="Which champion history to clear")
+    @app_commands.choices(period=[
+        app_commands.Choice(name="Weekly", value="week"),
+        app_commands.Choice(name="Monthly", value="month"),
+    ])
+    async def sb_clearchampions(self, interaction: discord.Interaction, period: str):
+        if not _is_privileged(interaction):
+            return await interaction.response.send_message("🚫 Server owner or bot owner only.", ephemeral=True)
+
+        guild_id = str(interaction.guild_id)
+        label = "Weekly" if period == "week" else "Monthly"
+        count = await starboard_db.get_champion_history_count(guild_id, period)
+
+        if count == 0:
+            return await interaction.response.send_message(
+                f"⚠️ No {label} champion history to clear.", ephemeral=True,
+            )
+
+        class ConfirmView(discord.ui.View):
+            def __init__(self):
+                super().__init__(timeout=30)
+                self.confirmed = False
+
+            @discord.ui.button(label=f"Clear {label} History", style=discord.ButtonStyle.danger)
+            async def confirm(self, btn: discord.Interaction, button: discord.ui.Button):
+                if not _is_privileged(btn):
+                    return await btn.response.send_message("🚫 Server owner or bot owner only.", ephemeral=True)
+                self.confirmed = True
+                self.stop()
+                await btn.response.defer()
+
+            @discord.ui.button(label="Cancel", style=discord.ButtonStyle.grey)
+            async def cancel(self, btn: discord.Interaction, button: discord.ui.Button):
+                self.stop()
+                await btn.response.send_message("Cancelled.", ephemeral=True)
+
+        view = ConfirmView()
+        await interaction.response.send_message(
+            f"⚠️ This will permanently delete **{count}** {label} champion record(s). Are you sure?",
+            view=view,
+            ephemeral=True,
+        )
+        await view.wait()
+
+        if not view.confirmed:
+            return
+
+        deleted = await starboard_db.clear_champion_history(guild_id, period)
+        await interaction.edit_original_response(
+            content=f"✅ Cleared **{deleted}** {label} champion record(s). Starting fresh!",
+            view=None,
         )
 
     @starboard.command(name="format", description="Set channel name prefix and suffix (e.g. ✨ and ✨ → ✨42✨)")

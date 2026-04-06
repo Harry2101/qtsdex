@@ -405,6 +405,18 @@ async def get_champion_history_count(guild_id: str, period_type: str) -> int:
             return row[0] if row else 0
 
 
+async def clear_champion_history(guild_id: str, period_type: str) -> int:
+    """Delete all champion_history rows for a guild + period type. Returns number deleted."""
+    async with _write_lock:
+        async with aiosqlite.connect(DB_PATH) as db:
+            cur = await db.execute(
+                "DELETE FROM champion_history WHERE guild_id=? AND period_type=?",
+                (guild_id, period_type),
+            )
+            await db.commit()
+            return cur.rowcount
+
+
 async def get_user_stats(guild_id: str, user_id: str) -> dict:
     """Get comprehensive stats for a user in a guild."""
     stats = {
