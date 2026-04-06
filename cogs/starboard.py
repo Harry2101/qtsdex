@@ -240,7 +240,7 @@ class StarboardCog(commands.Cog):
         )
         shiny_count = 0
         deleted_count = 0
-        catches: list[tuple] = []  # (user_name, user_id, pokemon_name, message_id)
+        catches: list[tuple] = []  # (user_name, user_id, pokemon_name, message_id, caught_at)
         to_delete: list[discord.Message] = []
 
         async for msg in channel.history(limit=None, oldest_first=True):
@@ -253,7 +253,8 @@ class StarboardCog(commands.Cog):
                 embed = msg.embeds[0]
                 uname, uid = _parse_catcher(embed)
                 pname = _parse_pokemon(embed)
-                catches.append((uname, uid, pname, str(msg.id)))
+                ts = msg.created_at.strftime("%Y-%m-%d %H:%M:%S")
+                catches.append((uname, uid, pname, str(msg.id), ts))
 
         # Bulk-delete non-bot messages in batches of 100 (much faster)
         for i in range(0, len(to_delete), 100):
@@ -277,8 +278,8 @@ class StarboardCog(commands.Cog):
 
         # Phase 3: Backfill catch records for leaderboard (duplicates are skipped)
         new_records = 0
-        for uname, uid, pname, mid in catches:
-            row_id = await starboard_db.record_catch(guild_id, uname, uid, pname, mid)
+        for uname, uid, pname, mid, ts in catches:
+            row_id = await starboard_db.record_catch(guild_id, uname, uid, pname, mid, caught_at=ts)
             if row_id:
                 new_records += 1
 
@@ -299,6 +300,53 @@ class StarboardCog(commands.Cog):
                 f"• Backfilled **{new_records}** new catch record(s) for leaderboard ({len(catches) - new_records} already tracked)\n"
                 f"{'• Channel name updated' if (prefix or suffix) else '• Set a format with `/starboard format` to update the channel name'}"
             ),
+        )
+
+    @starboard.command(name="resync", description="Re-read the starboard channel and fix catch timestamps from message dates")
+    async def sb_resync(self, interaction: discord.Interaction):
+        if not _is_admin(interaction):
+            return await interaction.response.send_message("🚫 Admin only.", ephemeral=True)
+
+        guild_id = str(interaction.guild_id)
+        cfg = starboard_db.get_config(guild_id)
+        if not cfg:
+            return await interaction.response.send_message(
+                "⚠️ No starboard configured. Use `/starboard init` first.", ephemeral=True,
+            )
+
+        await interaction.response.defer(thinking=True)
+        opdex_id = await _get_opdex_id(guild_id)
+        channel = interaction.guild.get_channel(int(cfg["channel_id"]))
+        if not channel:
+            return await interaction.followup.send("⚠️ Starboard channel not found.", ephemeral=True)
+
+        updated = 0
+        new_records = 0
+        async for msg in channel.history(limit=None, oldest_first=True):
+            if msg.author.id != opdex_id or not msg.embeds:
+                continue
+            if not _is_shiny_embed(msg.embeds[0]):
+                continue
+            embed = msg.embeds[0]
+            uname, uid = _parse_catcher(embed)
+            pname = _parse_pokemon(embed)
+            ts = msg.created_at.strftime("%Y-%m-%d %H:%M:%S")
+
+            # Try to insert (covers any missing records)
+            row_id = await starboard_db.record_catch(guild_id, uname, uid, pname, str(msg.id), caught_at=ts)
+            if row_id:
+                new_records += 1
+            else:
+                # Already exists — fix the timestamp
+                did_update = await starboard_db.update_catch_timestamp(guild_id, str(msg.id), ts)
+                if did_update:
+                    updated += 1
+
+        await interaction.followup.send(
+            f"✅ **Resync complete**\n"
+            f"• Fixed **{updated}** timestamp(s)\n"
+            f"• Added **{new_records}** missing record(s)",
+            ephemeral=True,
         )
 
     @starboard.command(name="format", description="Set channel name prefix and suffix (e.g. ✨ and ✨ → ✨42✨)")
@@ -546,7 +594,11 @@ class StarboardCog(commands.Cog):
 
     @tasks.loop(minutes=30)
     async def _announcement_loop(self):
-        """Check if it's time to post weekly or monthly top catcher announcements."""
+        """Check if it's time to post weekly or monthly top catcher announcements.
+        Skips the first iteration (which fires immediately on cog load)."""
+        if not hasattr(self, "_announcement_started"):
+            self._announcement_started = True
+            return
         now = datetime.now(timezone.utc)
         is_weekly = now.weekday() == 0 and now.hour == 0 and now.minute < 30   # Monday 00:00–00:30
         is_monthly = now.day == 1 and now.hour == 0 and now.minute < 30        # 1st of month 00:00–00:30

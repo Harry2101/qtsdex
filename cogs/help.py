@@ -115,19 +115,46 @@ def _section_friends(gid: str) -> tuple[str, str, discord.Embed]:
 def _section_starboard(gid: str) -> tuple[str, str, discord.Embed]:
     embed = discord.Embed(
         title="⭐  Starboard & Shiny Counter  *(admin only)*",
-        description=(
-            "`/starboard init <channel>`  — Set a channel as the starboard & count existing shinies\n"
-            "   ↳ Cleans non-bot messages, backfills leaderboard data\n\n"
-            "`/starboard format prefix: suffix:`  — Set channel name format (e.g. ✨42✨)\n\n"
-            "`/starboard count`  — View the current shiny count\n\n"
-            "`/starboard setcount <count>`  — Manually override the shiny count\n\n"
-            "`/starboard remove`  — Unlink the starboard channel\n\n"
-            "`/starboard status`  — Show current starboard configuration\n\n"
-            "`/starboard leaderboard [period]`  — Top shiny catchers (week/month/year/all)\n\n"
-            "**Auto-behaviour:** When Operation Dex posts a shiny catch in the starboard "
-            "channel, the count increments and the channel name updates automatically."
-        ),
         colour=0x5865F2,
+    )
+    embed.add_field(
+        name="Setup",
+        value=(
+            "`/starboard init <channel>`  — Set starboard channel & count existing shinies\n"
+            "`/starboard format prefix: suffix:`  — Set channel name format (e.g. ✨42✨)\n"
+            "`/starboard announcechannel <channel>`  — Set weekly/monthly announcement channel\n"
+            "`/starboard remove`  — Unlink the starboard channel\n"
+            "`/starboard status`  — Show current configuration"
+        ),
+        inline=False,
+    )
+    embed.add_field(
+        name="Leaderboard & Announcements",
+        value=(
+            "`/starboard leaderboard [period]`  — Interactive leaderboard (week/month/all)\n"
+            "   ↳ Buttons: period switch · History · Hall of Fame · My Stats\n"
+            "`/starboard post [period]`  — Preview & post announcements on demand\n"
+            "`/starboard count`  — View the current shiny count\n"
+            "`/starboard setcount <count>`  — Manually override the shiny count"
+        ),
+        inline=False,
+    )
+    embed.add_field(
+        name="Maintenance",
+        value=(
+            "`/starboard resync`  — Re-read channel & fix catch timestamps from message dates"
+        ),
+        inline=False,
+    )
+    embed.add_field(
+        name="Auto-behaviour",
+        value=(
+            "When Operation Dex posts a shiny catch in the starboard channel, the count "
+            "increments and the channel name updates automatically.\n"
+            "Weekly (Monday) and monthly (1st) top catcher announcements are posted "
+            "to the configured announce channel with champion tracking & streaks."
+        ),
+        inline=False,
     )
     embed.set_footer(text=make_footer(gid))
     return ("⭐", "Starboard & Shiny Counter", embed)

@@ -231,17 +231,38 @@ async def record_catch(
     user_id: str,
     pokemon_name: str,
     message_id: str,
+    caught_at: str = "",
 ) -> int:
-    """Record a shiny catch. Skips duplicates (same guild + message). Returns the new row ID or 0 if duplicate."""
+    """Record a shiny catch. Skips duplicates (same guild + message). Returns the new row ID or 0 if duplicate.
+    caught_at: ISO datetime string. If empty, uses current time (SQLite default)."""
+    async with _write_lock:
+        async with aiosqlite.connect(DB_PATH) as db:
+            if caught_at:
+                cur = await db.execute(
+                    """INSERT OR IGNORE INTO shiny_catches (guild_id, user_name, user_id, pokemon_name, message_id, caught_at)
+                       VALUES (?, ?, ?, ?, ?, ?)""",
+                    (guild_id, user_name, user_id, pokemon_name, message_id, caught_at),
+                )
+            else:
+                cur = await db.execute(
+                    """INSERT OR IGNORE INTO shiny_catches (guild_id, user_name, user_id, pokemon_name, message_id)
+                       VALUES (?, ?, ?, ?, ?)""",
+                    (guild_id, user_name, user_id, pokemon_name, message_id),
+                )
+            await db.commit()
+            return cur.lastrowid if cur.rowcount > 0 else 0
+
+
+async def update_catch_timestamp(guild_id: str, message_id: str, caught_at: str) -> bool:
+    """Update the caught_at timestamp for an existing catch record. Returns True if a row was updated."""
     async with _write_lock:
         async with aiosqlite.connect(DB_PATH) as db:
             cur = await db.execute(
-                """INSERT OR IGNORE INTO shiny_catches (guild_id, user_name, user_id, pokemon_name, message_id)
-                   VALUES (?, ?, ?, ?, ?)""",
-                (guild_id, user_name, user_id, pokemon_name, message_id),
+                "UPDATE shiny_catches SET caught_at=? WHERE guild_id=? AND message_id=?",
+                (caught_at, guild_id, message_id),
             )
             await db.commit()
-            return cur.lastrowid if cur.rowcount > 0 else 0
+            return cur.rowcount > 0
 
 
 async def get_leaderboard(guild_id: str, period: str = "all", limit: int = 10) -> list[tuple]:
