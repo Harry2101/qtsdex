@@ -334,7 +334,7 @@ async def get_leaderboard(guild_id: str, period: str = "all", limit: int = 10) -
         async with db.execute(
             f"""SELECT user_name, user_id, COUNT(*) as cnt
                 FROM shiny_catches
-                WHERE guild_id=? {where_time}
+                WHERE guild_id=? AND user_id != '' {where_time}
                 GROUP BY guild_id, user_id
                 ORDER BY cnt DESC
                 LIMIT ?""",
@@ -436,7 +436,7 @@ async def get_champion_history(
         async with db.execute(
             """SELECT period_label, user_name, user_id, catch_count, total_catches
                FROM champion_history
-               WHERE guild_id=? AND period_type=?
+               WHERE guild_id=? AND period_type=? AND user_id != ''
                ORDER BY period_label DESC
                LIMIT ? OFFSET ?""",
             (guild_id, period_type, limit, offset),
@@ -448,7 +448,7 @@ async def get_champion_history_count(guild_id: str, period_type: str) -> int:
     """Get total number of champion records for a period type."""
     async with aiosqlite.connect(DB_PATH) as db:
         async with db.execute(
-            "SELECT COUNT(*) FROM champion_history WHERE guild_id=? AND period_type=?",
+            "SELECT COUNT(*) FROM champion_history WHERE guild_id=? AND period_type=? AND user_id != ''",
             (guild_id, period_type),
         ) as cur:
             row = await cur.fetchone()
@@ -562,7 +562,7 @@ async def get_top_champions(guild_id: str, period_type: str, limit: int = 10) ->
         async with db.execute(
             """SELECT user_name, user_id, COUNT(*) as wins
                FROM champion_history
-               WHERE guild_id=? AND period_type=?
+               WHERE guild_id=? AND period_type=? AND user_id != ''
                GROUP BY user_id
                ORDER BY wins DESC
                LIMIT ?""",

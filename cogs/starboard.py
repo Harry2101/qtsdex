@@ -694,9 +694,23 @@ class StarboardCog(commands.Cog):
             ephemeral=True,
         )
 
-    @starboard.command(name="announceping", description="Set a role to ping in champion announcements (omit to clear)")
-    @app_commands.describe(role="Role to mention in weekly/monthly champion posts (omit to clear)")
-    async def sb_announce_ping(self, interaction: discord.Interaction, role: Optional[discord.Role] = None):
+    @starboard.command(name="announceping", description="Add, remove, or clear roles to ping in champion announcements")
+    @app_commands.describe(
+        action="Add a role, remove a role, or clear all ping roles",
+        role="The role to add or remove (not needed for clear/list)",
+    )
+    @app_commands.choices(action=[
+        app_commands.Choice(name="Add", value="add"),
+        app_commands.Choice(name="Remove", value="remove"),
+        app_commands.Choice(name="Clear all", value="clear"),
+        app_commands.Choice(name="List", value="list"),
+    ])
+    async def sb_announce_ping(
+        self,
+        interaction: discord.Interaction,
+        action: str,
+        role: Optional[discord.Role] = None,
+    ):
         if not _is_admin(interaction):
             return await interaction.response.send_message("🚫 Admin only.", ephemeral=True)
 
@@ -707,21 +721,53 @@ class StarboardCog(commands.Cog):
                 "⚠️ No starboard configured. Use `/starboard init` first.", ephemeral=True,
             )
 
-        if role is None:
-            ok = await starboard_db.set_announce_ping_role(guild_id, "")
-            if not ok:
-                return await interaction.response.send_message("⚠️ No starboard configured.", ephemeral=True)
+        current = cfg.get("announce_ping_role", "")
+        role_ids = [r for r in current.split(",") if r] if current else []
+
+        if action == "list":
+            if not role_ids:
+                return await interaction.response.send_message(
+                    "📋 No announcement ping roles configured.", ephemeral=True,
+                )
+            mentions = " ".join(f"<@&{r}>" for r in role_ids)
             return await interaction.response.send_message(
-                "✅ Announcement ping role cleared. No role will be mentioned.", ephemeral=True,
+                f"📋 **Announcement ping roles:** {mentions}", ephemeral=True,
             )
 
-        ok = await starboard_db.set_announce_ping_role(guild_id, str(role.id))
-        if not ok:
-            return await interaction.response.send_message("⚠️ No starboard configured.", ephemeral=True)
-        await interaction.response.send_message(
-            f"✅ Champion announcements will now ping {role.mention}!",
-            ephemeral=True,
-        )
+        if action == "clear":
+            await starboard_db.set_announce_ping_role(guild_id, "")
+            return await interaction.response.send_message(
+                "✅ All announcement ping roles cleared.", ephemeral=True,
+            )
+
+        if role is None:
+            return await interaction.response.send_message(
+                f"⚠️ You must select a role to {action}.", ephemeral=True,
+            )
+
+        role_id_str = str(role.id)
+
+        if action == "add":
+            if role_id_str in role_ids:
+                return await interaction.response.send_message(
+                    f"⚠️ {role.mention} is already in the ping list.", ephemeral=True,
+                )
+            role_ids.append(role_id_str)
+            await starboard_db.set_announce_ping_role(guild_id, ",".join(role_ids))
+            return await interaction.response.send_message(
+                f"✅ Added {role.mention} to announcement pings!", ephemeral=True,
+            )
+
+        if action == "remove":
+            if role_id_str not in role_ids:
+                return await interaction.response.send_message(
+                    f"⚠️ {role.mention} is not in the ping list.", ephemeral=True,
+                )
+            role_ids.remove(role_id_str)
+            await starboard_db.set_announce_ping_role(guild_id, ",".join(role_ids))
+            return await interaction.response.send_message(
+                f"✅ Removed {role.mention} from announcement pings.", ephemeral=True,
+            )
 
     # ── Weekly / Monthly announcement scheduler ──────────────────────────────
 
