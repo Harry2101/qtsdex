@@ -4,6 +4,8 @@ SQLite storage for the catch-tracking & grind-session system.
 
 Tables:
   catch_sessions     — active / completed grind sessions per guild+channel
+  burst_channels     — admin-registered burst channels per guild
+  burst_sessions     — a single guild-wide burst session spanning many channels
   catch_events       — individual catch records (pokemon spawned, caught, who, how fast)
   catch_user_daily   — per-user daily aggregates (for cheap daily/weekly/monthly rollups)
 
@@ -77,12 +79,34 @@ CREATE TABLE IF NOT EXISTS catch_user_daily (
     UNIQUE(guild_id, user_id, day)
 );
 
+CREATE TABLE IF NOT EXISTS burst_channels (
+    guild_id    TEXT NOT NULL,
+    channel_id  TEXT NOT NULL,
+    added_by    TEXT NOT NULL DEFAULT '',
+    added_at    TEXT NOT NULL DEFAULT (datetime('now')),
+    PRIMARY KEY (guild_id, channel_id)
+);
+
+CREATE TABLE IF NOT EXISTS burst_sessions (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    guild_id     TEXT    NOT NULL,
+    started_by   TEXT    NOT NULL,
+    started_at   TEXT    NOT NULL DEFAULT (datetime('now')),
+    ended_at     TEXT,
+    paused_at    TEXT,
+    total_paused INTEGER NOT NULL DEFAULT 0,
+    state        TEXT    NOT NULL DEFAULT 'active',  -- active|paused|ended
+    label        TEXT    NOT NULL DEFAULT ''
+);
+
 -- Indexes
 CREATE INDEX IF NOT EXISTS idx_ce_session    ON catch_events (session_id);
 CREATE INDEX IF NOT EXISTS idx_ce_guild_user ON catch_events (guild_id, user_id, caught_at);
 CREATE INDEX IF NOT EXISTS idx_ce_guild_ch   ON catch_events (guild_id, channel_id, caught_at);
 CREATE INDEX IF NOT EXISTS idx_cs_guild_ch   ON catch_sessions (guild_id, channel_id, state);
 CREATE INDEX IF NOT EXISTS idx_cud_guild     ON catch_user_daily (guild_id, user_id, day);
+CREATE INDEX IF NOT EXISTS idx_bs_guild      ON burst_sessions (guild_id, state);
+CREATE INDEX IF NOT EXISTS idx_bc_guild      ON burst_channels (guild_id);
 """
 
 _MIGRATIONS = [
@@ -588,3 +612,244 @@ async def get_fastest_catches(guild_id: str, limit: int = 5) -> list[dict]:
         {"user_name": r[0], "pokemon_name": r[1], "reaction_ms": r[2], "caught_at": r[3]}
         for r in rows
     ]
+
+
+# ── Burst channels ────────────────────────────────────────────────────────────
+
+async def add_burst_channels(guild_id: str, channel_ids: list[str], added_by: str = "") -> tuple[list[str], list[str]]:
+    """
+    Register channels as burst channels. Returns (added, already_existed).
+    """
+    added: list[str]   = []
+    already: list[str] = []
+    async with _write_lock:
+        async with aiosqlite.connect(DB_PATH) as db:
+            for cid in channel_ids:
+                try:
+                    await db.execute(
+                        "INSERT INTO burst_channels (guild_id, channel_id, added_by) VALUES (?, ?, ?)",
+                        (guild_id, cid, added_by),
+                    )
+                    added.append(cid)
+                except aiosqlite.IntegrityError:
+                    already.append(cid)
+            await db.commit()
+    return added, already
+
+
+async def remove_burst_channels(guild_id: str, channel_ids: list[str]) -> tuple[list[str], list[str]]:
+    """
+    Unregister channels. Returns (removed, not_found).
+    """
+    removed: list[str]   = []
+    not_found: list[str] = []
+    async with _write_lock:
+        async with aiosqlite.connect(DB_PATH) as db:
+            for cid in channel_ids:
+                cur = await db.execute(
+                    "DELETE FROM burst_channels WHERE guild_id=? AND channel_id=?",
+                    (guild_id, cid),
+                )
+                (removed if cur.rowcount > 0 else not_found).append(cid)
+            await db.commit()
+    return removed, not_found
+
+
+async def get_burst_channels(guild_id: str) -> list[str]:
+    """Return list of registered burst channel IDs for a guild."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        async with db.execute(
+            "SELECT channel_id FROM burst_channels WHERE guild_id=? ORDER BY added_at ASC",
+            (guild_id,),
+        ) as cur:
+            rows = await cur.fetchall()
+    return [r[0] for r in rows]
+
+
+async def is_burst_channel(guild_id: str, channel_id: str) -> bool:
+    async with aiosqlite.connect(DB_PATH) as db:
+        async with db.execute(
+            "SELECT 1 FROM burst_channels WHERE guild_id=? AND channel_id=?",
+            (guild_id, channel_id),
+        ) as cur:
+            return await cur.fetchone() is not None
+
+
+async def clear_burst_channels(guild_id: str) -> int:
+    """Remove all burst channels for a guild. Returns count removed."""
+    async with _write_lock:
+        async with aiosqlite.connect(DB_PATH) as db:
+            cur = await db.execute(
+                "DELETE FROM burst_channels WHERE guild_id=?", (guild_id,)
+            )
+            await db.commit()
+            return cur.rowcount
+
+
+# ── Burst sessions ────────────────────────────────────────────────────────────
+
+async def start_burst_session(guild_id: str, started_by: str, label: str = "") -> int:
+    """Start a guild-wide burst session. Returns session ID."""
+    async with _write_lock:
+        async with aiosqlite.connect(DB_PATH) as db:
+            cur = await db.execute(
+                "INSERT INTO burst_sessions (guild_id, started_by, label, state) VALUES (?, ?, ?, 'active')",
+                (guild_id, started_by, label),
+            )
+            await db.commit()
+            return cur.lastrowid
+
+
+async def get_active_burst_session(guild_id: str) -> Optional[dict]:
+    """Return the active/paused burst session for the guild, or None."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        async with db.execute(
+            """SELECT id, started_by, started_at, paused_at, total_paused, state, label
+               FROM burst_sessions
+               WHERE guild_id=? AND state IN ('active','paused')
+               ORDER BY started_at DESC LIMIT 1""",
+            (guild_id,),
+        ) as cur:
+            row = await cur.fetchone()
+    if not row:
+        return None
+    return {
+        "id": row[0], "started_by": row[1], "started_at": row[2],
+        "paused_at": row[3], "total_paused": row[4],
+        "state": row[5], "label": row[6],
+    }
+
+
+async def pause_burst_session(session_id: int, paused_at: str) -> bool:
+    async with _write_lock:
+        async with aiosqlite.connect(DB_PATH) as db:
+            cur = await db.execute(
+                "UPDATE burst_sessions SET state='paused', paused_at=? WHERE id=? AND state='active'",
+                (paused_at, session_id),
+            )
+            await db.commit()
+            return cur.rowcount > 0
+
+
+async def resume_burst_session(session_id: int, extra_paused_ms: int) -> bool:
+    async with _write_lock:
+        async with aiosqlite.connect(DB_PATH) as db:
+            cur = await db.execute(
+                """UPDATE burst_sessions
+                   SET state='active', paused_at=NULL,
+                       total_paused = total_paused + ?
+                   WHERE id=? AND state='paused'""",
+                (extra_paused_ms // 1000, session_id),
+            )
+            await db.commit()
+            return cur.rowcount > 0
+
+
+async def end_burst_session(session_id: int, ended_at: str) -> bool:
+    async with _write_lock:
+        async with aiosqlite.connect(DB_PATH) as db:
+            cur = await db.execute(
+                """UPDATE burst_sessions
+                   SET state='ended', ended_at=?, paused_at=NULL
+                   WHERE id=? AND state IN ('active','paused')""",
+                (ended_at, session_id),
+            )
+            await db.commit()
+            return cur.rowcount > 0
+
+
+async def get_burst_session_by_id(session_id: int) -> Optional[dict]:
+    async with aiosqlite.connect(DB_PATH) as db:
+        async with db.execute(
+            """SELECT id, guild_id, started_by, started_at, ended_at,
+                      paused_at, total_paused, state, label
+               FROM burst_sessions WHERE id=?""",
+            (session_id,),
+        ) as cur:
+            row = await cur.fetchone()
+    if not row:
+        return None
+    return {
+        "id": row[0], "guild_id": row[1], "started_by": row[2],
+        "started_at": row[3], "ended_at": row[4], "paused_at": row[5],
+        "total_paused": row[6], "state": row[7], "label": row[8],
+    }
+
+
+async def get_burst_session_stats(burst_session_id: int, guild_id: str) -> dict:
+    """
+    Aggregate stats for a burst session — pulls from all catch_events in the
+    guild that were recorded during the burst session's time window, across all
+    registered burst channels.
+    """
+    burst = await get_burst_session_by_id(burst_session_id)
+    if not burst:
+        return {"users": [], "total_catches": 0, "fastest_ms": 0, "avg_ms": 0,
+                "unique_pokemon": 0, "catchers": 0, "fastest_detail": None}
+
+    started_at = burst["started_at"]
+    ended_at   = burst.get("ended_at") or "9999-12-31"
+
+    async with aiosqlite.connect(DB_PATH) as db:
+        # Per-user breakdown across all burst channels
+        async with db.execute(
+            """SELECT user_id, user_name,
+                      COUNT(*) as catches,
+                      MIN(reaction_ms) as fastest,
+                      AVG(reaction_ms) as avg_ms,
+                      COUNT(DISTINCT pokemon_name) as unique_pkmn
+               FROM catch_events
+               WHERE guild_id=? AND is_session=1
+                 AND caught_at >= ? AND caught_at <= ?
+               GROUP BY user_id ORDER BY catches DESC""",
+            (guild_id, started_at, ended_at),
+        ) as cur:
+            user_rows = await cur.fetchall()
+
+        # Overall totals
+        async with db.execute(
+            """SELECT COUNT(*), MIN(reaction_ms), AVG(reaction_ms),
+                      COUNT(DISTINCT pokemon_name), COUNT(DISTINCT user_id),
+                      COUNT(DISTINCT channel_id)
+               FROM catch_events
+               WHERE guild_id=? AND is_session=1
+                 AND caught_at >= ? AND caught_at <= ?""",
+            (guild_id, started_at, ended_at),
+        ) as cur:
+            tot = await cur.fetchone()
+
+        # Fastest detail
+        async with db.execute(
+            """SELECT user_name, pokemon_name, reaction_ms, caught_at
+               FROM catch_events
+               WHERE guild_id=? AND is_session=1 AND reaction_ms > 0
+                 AND caught_at >= ? AND caught_at <= ?
+               ORDER BY reaction_ms ASC LIMIT 1""",
+            (guild_id, started_at, ended_at),
+        ) as cur:
+            fastest_row = await cur.fetchone()
+
+    users = [
+        {
+            "user_id": r[0], "user_name": r[1], "catches": r[2],
+            "fastest_ms": r[3] or 0, "avg_ms": round(r[4] or 0),
+            "unique_pokemon": r[5],
+        }
+        for r in user_rows
+    ]
+    total = tot[0] if tot else 0
+    return {
+        "users": users,
+        "total_catches": total,
+        "fastest_ms": tot[1] or 0 if tot else 0,
+        "avg_ms": round(tot[2] or 0) if tot else 0,
+        "unique_pokemon": tot[3] or 0 if tot else 0,
+        "catchers": tot[4] or 0 if tot else 0,
+        "active_channels": tot[5] or 0 if tot else 0,
+        "fastest_detail": {
+            "user_name": fastest_row[0],
+            "pokemon_name": fastest_row[1],
+            "reaction_ms": fastest_row[2],
+            "caught_at": fastest_row[3],
+        } if fastest_row else None,
+    }

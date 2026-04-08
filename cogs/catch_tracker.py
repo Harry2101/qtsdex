@@ -4,30 +4,37 @@ cogs/catch_tracker.py  —  Catch Tracker & Grind Session System
 Passively listens to Pokémon spawns and catch confirmations from the
 Operation Dex bot in ANY channel, recording who caught what and how fast.
 
-Prefix commands (anyone):
-  !catchstart [label]   — start a grind session in this channel
-  !catchstop            — end the current session and show summary
-  !catchpause           — pause a running session (timer stops)
-  !catchresume          — resume a paused session
-  !catchstatus          — show live stats for the active session
+── Single-channel sessions (prefix, anyone) ──────────────────────────────────
+  !catchstart [label]   — start a session in THIS channel only
+  !catchstop            — end session + show summary
+  !catchpause           — pause timer
+  !catchresume          — resume timer
+  !catchstatus          — live stats for active session
 
-Slash commands:
-  /catches stats [user]             — personal (or another user's) lifetime stats
-  /catches leaderboard [period]     — server leaderboard (today/week/month/all)
-  /catches session [session_id]     — summary of a specific past session
-  /catches fastest                  — all-time fastest catches in the server
+── Multi-channel burst sessions (prefix, admin/owner) ────────────────────────
+  !burststart [label]   — start a burst session across ALL registered burst channels
+  !burststop            — end burst session + full summary
+  !burstpause           — pause the burst timer
+  !burstresume          — resume the burst timer
+  !burststatus          — live stats across all burst channels
+
+── Burst channel management (slash, admin/owner) ─────────────────────────────
+  /catches burst add    — add channels (single, category, or from→to range)
+  /catches burst remove — remove channels (same selectors)
+  /catches burst list   — show all registered burst channels
+  /catches burst clear  — remove all burst channels
+
+── Stats & leaderboards (slash, anyone) ──────────────────────────────────────
+  /catches stats [user]             — personal lifetime stats
+  /catches leaderboard [period]     — server leaderboard
+  /catches session <id>             — replay a past session
+  /catches fastest                  — all-time fastest catches
 
 Detection logic:
-  Spawns  → embed from Op Dex whose title matches "A wild … appeared!"
-            (tolerates surrounding emojis, any capitalisation)
-  Catches → a message starting with a mention of Op Dex bot followed by "c "
-            (e.g. @OpDex c Hippopotas), sent AFTER a spawn in the SAME channel.
-            The bot then responds; we watch for Op Dex's reply to that user
-            containing the pokemon name + "Catch ID" to confirm success.
-
-Only catches in the same channel as the spawn (and within 60 s) are counted.
-Outside sessions every catch is still recorded passively so lifetime stats
-build up for every user automatically.
+  Spawns  → Op Dex embed whose title matches "A wild … appeared!"
+  Catches → message <@OpDex> c <name>, confirmed by Op Dex reply with "Catch ID:"
+  Burst   → a catch in a registered burst channel while a burst session is active
+            is automatically counted in the burst session totals.
 """
 
 import asyncio
@@ -120,6 +127,121 @@ def _speed_bar(ms: int, max_ms: int = 10000, width: int = 10) -> str:
 async def _get_opdex_id(guild_id: str) -> int:
     custom = await guild_settings_db.get_opdex_bot_id(guild_id)
     return custom or DEFAULT_OPDEX
+
+
+def _is_slash_privileged(interaction: discord.Interaction) -> bool:
+    if interaction.user.id == OWNER_ID:
+        return True
+    perms = getattr(interaction.user, "guild_permissions", None)
+    return bool(perms and perms.administrator)
+
+
+async def _is_privileged(ctx: commands.Context) -> bool:
+    if ctx.author.id == OWNER_ID:
+        return True
+    perms = getattr(ctx.author, "guild_permissions", None)
+    return bool(perms and perms.administrator)
+
+
+def _sort_channel_ids(guild: discord.Guild, ids: list[str]) -> list[str]:
+    """Sort channel IDs by their position in the server (category then channel)."""
+    def _pos(cid: str) -> tuple[int, int]:
+        ch = guild.get_channel(int(cid))
+        if ch is None:
+            return (99999, 99999)
+        cat_pos = ch.category.position if ch.category else -1
+        return (cat_pos, ch.position)
+    return sorted(ids, key=_pos)
+
+
+def _channel_list_str(guild: discord.Guild, ids: list[str], numbered: bool = False) -> str:
+    """Format a list of channel IDs as mentions, sorted by server position."""
+    sorted_ids = _sort_channel_ids(guild, ids)
+    lines = []
+    for i, cid in enumerate(sorted_ids):
+        ch   = guild.get_channel(int(cid))
+        name = ch.mention if ch else f"<#{cid}>"
+        lines.append(f"{i+1}. {name}" if numbered else name)
+    # Chunk into rows of 4 for readability
+    if not numbered:
+        rows = [" · ".join(lines[i:i+4]) for i in range(0, len(lines), 4)]
+        return "\n".join(rows)
+    return "\n".join(lines)
+
+
+def _burst_session_embed(
+    burst: dict,
+    stats: dict,
+    channel_ids: list[str],
+    guild_id: str,
+    ended: bool = False,
+) -> discord.Embed:
+    """Rich embed for a burst session summary or live status."""
+    label   = burst.get("label") or ""
+    state   = burst.get("state", "active")
+    started = burst.get("started_at", "")
+
+    try:
+        start_dt = datetime.fromisoformat(started).replace(tzinfo=timezone.utc)
+    except Exception:
+        start_dt = _now_utc()
+
+    now    = _now_utc()
+    end_dt = now
+    if ended and burst.get("ended_at"):
+        try:
+            end_dt = datetime.fromisoformat(burst["ended_at"]).replace(tzinfo=timezone.utc)
+        except Exception:
+            pass
+
+    elapsed_s = int((end_dt - start_dt).total_seconds())
+    paused_s  = burst.get("total_paused", 0) or 0
+    net_s     = max(0, elapsed_s - paused_s)
+    total     = stats.get("total_catches", 0)
+    rate_str  = f"{total/(net_s/60):.1f}/min" if net_s >= 60 and total > 0 else "—"
+
+    icon  = "🏁" if ended else ("⏸️" if state == "paused" else "⚡")
+    title = f"{icon} Burst Session"
+    if label:
+        title += f" — {label}"
+
+    colour = 0xF1C40F if not ended else 0x57F287
+    embed  = discord.Embed(title=title, colour=colour)
+
+    embed.add_field(name="⏱️ Duration",
+                    value=f"`{_fmt_duration(net_s)}`" + (f"\n*(+{_fmt_duration(paused_s)} paused)*" if paused_s else ""),
+                    inline=True)
+    embed.add_field(name="🎯 Total Catches", value=f"`{total}`", inline=True)
+    embed.add_field(name="⚡ Rate", value=f"`{rate_str}`", inline=True)
+
+    if stats.get("active_channels", 0):
+        embed.add_field(name="📡 Active Channels", value=f"`{stats['active_channels']}`", inline=True)
+    if stats.get("unique_pokemon", 0):
+        embed.add_field(name="🔢 Unique Pokémon", value=f"`{stats['unique_pokemon']}`", inline=True)
+    if stats.get("avg_ms", 0):
+        embed.add_field(name="📊 Avg React", value=f"`{_fmt_ms(stats['avg_ms'])}`", inline=True)
+    if stats.get("fastest_ms", 0):
+        fd  = stats.get("fastest_detail")
+        val = f"`{_fmt_ms(stats['fastest_ms'])}`"
+        if fd:
+            val += f"\n{fd['user_name']} — {fd['pokemon_name']}"
+        embed.add_field(name="🏆 Fastest Catch", value=val, inline=True)
+
+    users = stats.get("users", [])
+    if users:
+        lines  = []
+        medals = ["🥇", "🥈", "🥉"]
+        for i, u in enumerate(users):
+            medal = medals[i] if i < 3 else f"`{i+1}.`"
+            name  = u.get("user_name") or f"<@{u['user_id']}>"
+            c     = u["catches"]
+            spd   = _fmt_ms(u["fastest_ms"]) if u.get("fastest_ms") else "—"
+            pct   = f"{c/total*100:.0f}%" if total > 0 else "—"
+            lines.append(f"{medal} **{name}** — {c} ({pct}) · fastest {spd}")
+        embed.add_field(name="👥 Catchers", value="\n".join(lines), inline=False)
+
+    embed.set_footer(text=make_footer(guild_id) + f" • {len(channel_ids)} burst channel(s)")
+    return embed
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -465,17 +587,24 @@ class CatchTrackerCog(commands.Cog):
             spawned_at   = spawn["ts"].strftime("%Y-%m-%d %H:%M:%S")
             today_str    = _now_utc().strftime("%Y-%m-%d")
 
-            # Resolve the active session for this channel (if any)
+            # Resolve session: prefer single-channel session, then burst session,
+            # then fall back to passive (for lifetime tracking only).
             session      = await catch_db.get_active_session(guild_id, channel_id)
-            session_id   = session["id"] if session and session["state"] == "active" else -1
-            # Use session_id -1 as a sentinel "no session" — we still record for lifetime stats
-            # but is_session=False
-            is_session   = session_id > 0
+            burst        = await catch_db.get_active_burst_session(guild_id)
+            in_burst_ch  = await catch_db.is_burst_channel(guild_id, channel_id)
 
-            if not is_session:
-                # Still need a session row to satisfy the FK — use a global "passive" session
-                # per guild per day (creates lazily)
+            if session and session["state"] == "active":
+                session_id = session["id"]
+                is_session = True
+            elif burst and burst["state"] == "active" and in_burst_ch:
+                # Each burst channel needs its own catch_sessions FK row — create lazily
+                session_id = await self._get_or_create_burst_proxy_session(
+                    guild_id, channel_id, burst
+                )
+                is_session = True
+            else:
                 session_id = await self._get_or_create_passive_session(guild_id)
+                is_session = False
 
             row_id = await catch_db.record_catch(
                 session_id   = session_id,
@@ -513,9 +642,10 @@ class CatchTrackerCog(commands.Cog):
                 f"in {reaction_ms}ms (session={'yes' if is_session else 'passive'})"
             )
 
-    # ── Passive session helper ────────────────────────────────────────────────
+    # ── Session helpers ───────────────────────────────────────────────────────
 
-    _passive_sessions: dict[str, int] = {}  # guild_id → session_id
+    _passive_sessions: dict[str, int] = {}       # f"{guild_id}:{date}" → session_id
+    _burst_proxy_sessions: dict[str, int] = {}   # f"{guild_id}:{channel_id}:{burst_id}" → session_id
 
     async def _get_or_create_passive_session(self, guild_id: str) -> int:
         """Return (or lazily create) the guild-wide passive session for today."""
@@ -523,7 +653,6 @@ class CatchTrackerCog(commands.Cog):
         cache_key = f"{guild_id}:{today}"
         if cache_key in self._passive_sessions:
             return self._passive_sessions[cache_key]
-        # Create a new one
         sid = await catch_db.start_session(
             guild_id   = guild_id,
             channel_id = "passive",
@@ -531,6 +660,25 @@ class CatchTrackerCog(commands.Cog):
             label      = f"passive:{today}",
         )
         self._passive_sessions[cache_key] = sid
+        return sid
+
+    async def _get_or_create_burst_proxy_session(
+        self, guild_id: str, channel_id: str, burst: dict
+    ) -> int:
+        """
+        Each burst channel needs its own catch_sessions row (FK requirement).
+        We create one proxy session per channel per burst session and cache it.
+        """
+        cache_key = f"{guild_id}:{channel_id}:{burst['id']}"
+        if cache_key in self._burst_proxy_sessions:
+            return self._burst_proxy_sessions[cache_key]
+        sid = await catch_db.start_session(
+            guild_id   = guild_id,
+            channel_id = channel_id,
+            started_by = burst["started_by"],
+            label      = f"burst#{burst['id']}:{burst.get('label', '')}",
+        )
+        self._burst_proxy_sessions[cache_key] = sid
         return sid
 
     # ── Prefix commands ───────────────────────────────────────────────────────
@@ -666,9 +814,168 @@ class CatchTrackerCog(commands.Cog):
         embed = _session_embed(session, stats, guild_id, ended=False)
         await ctx.send(embed=embed)
 
+    # ── Burst prefix commands ─────────────────────────────────────────────────
+
+    @commands.command(name="burststart", aliases=["bstart"])
+    async def burststart(self, ctx: commands.Context, *, label: str = ""):
+        """Start a multi-channel burst session across all registered burst channels. Admin/owner only."""
+        if not ctx.guild:
+            return
+        if not await _is_privileged(ctx):
+            await ctx.send("🚫 Only admins or the bot owner can start a burst session.")
+            return
+
+        guild_id = str(ctx.guild.id)
+        existing = await catch_db.get_active_burst_session(guild_id)
+        if existing:
+            state_word = "paused" if existing["state"] == "paused" else "already running"
+            await ctx.send(
+                f"⚠️ A burst session is {state_word} "
+                f"(started by <@{existing['started_by']}>, label: `{existing['label'] or 'none'}`). "
+                f"Use `!burststop` to end it or `!burstresume` to resume."
+            )
+            return
+
+        channels = await catch_db.get_burst_channels(guild_id)
+        if not channels:
+            await ctx.send(
+                "❌ No burst channels registered yet!\n"
+                "Use `/catches burst add` to register channels first."
+            )
+            return
+
+        sid = await catch_db.start_burst_session(
+            guild_id   = guild_id,
+            started_by = str(ctx.author.id),
+            label      = label or "",
+        )
+        # Invalidate burst proxy session cache so new proxies are created for this session
+        keys_to_drop = [k for k in self._burst_proxy_sessions if k.startswith(guild_id + ":")]
+        for k in keys_to_drop:
+            del self._burst_proxy_sessions[k]
+
+        ch_mentions = " ".join(f"<#{c}>" for c in channels[:10])
+        extra       = f" *(+{len(channels)-10} more)*" if len(channels) > 10 else ""
+
+        embed = discord.Embed(
+            title="⚡ Burst Session Started!",
+            description=(
+                f"Tracking catches across **{len(channels)}** channel(s).\n"
+                f"Session ID: `{sid}`"
+                + (f"\nLabel: **{label}**" if label else "")
+            ),
+            colour=0xF1C40F,
+        )
+        embed.add_field(name="📡 Channels", value=ch_mentions + extra, inline=False)
+        embed.add_field(
+            name="Commands",
+            value="`!burststop` · `!burstpause` · `!burstresume` · `!burststatus`",
+            inline=False,
+        )
+        embed.set_footer(text=make_footer(guild_id))
+        await ctx.send(embed=embed)
+
+    @commands.command(name="burststop", aliases=["bstop", "burstend"])
+    async def burststop(self, ctx: commands.Context):
+        """End the active burst session and show a full summary."""
+        if not ctx.guild:
+            return
+        if not await _is_privileged(ctx):
+            await ctx.send("🚫 Only admins or the bot owner can stop a burst session.")
+            return
+
+        guild_id = str(ctx.guild.id)
+        burst    = await catch_db.get_active_burst_session(guild_id)
+        if not burst:
+            await ctx.send("❌ No active burst session in this server.")
+            return
+
+        ended_at = _now_utc().strftime("%Y-%m-%d %H:%M:%S")
+        await catch_db.end_burst_session(burst["id"], ended_at)
+        burst["ended_at"] = ended_at
+        burst["state"]    = "ended"
+
+        # End all proxy catch_sessions for this burst
+        proxy_keys = [k for k in self._burst_proxy_sessions if k.startswith(guild_id + ":")]
+        for k in proxy_keys:
+            await catch_db.end_session(self._burst_proxy_sessions.pop(k), ended_at)
+
+        stats = await catch_db.get_burst_session_stats(burst["id"], guild_id)
+        channels = await catch_db.get_burst_channels(guild_id)
+        embed = _burst_session_embed(burst, stats, channels, guild_id, ended=True)
+        await ctx.send(embed=embed)
+
+    @commands.command(name="burstpause", aliases=["bpause"])
+    async def burstpause(self, ctx: commands.Context):
+        """Pause the active burst session (timer stops)."""
+        if not ctx.guild:
+            return
+        if not await _is_privileged(ctx):
+            await ctx.send("🚫 Only admins or the bot owner can pause a burst session.")
+            return
+
+        guild_id = str(ctx.guild.id)
+        burst    = await catch_db.get_active_burst_session(guild_id)
+        if not burst:
+            await ctx.send("❌ No active burst session in this server.")
+            return
+        if burst["state"] == "paused":
+            await ctx.send("⏸️ Burst session is already paused. Use `!burstresume` to continue.")
+            return
+
+        paused_at = _now_utc().strftime("%Y-%m-%d %H:%M:%S")
+        await catch_db.pause_burst_session(burst["id"], paused_at)
+        await ctx.send("⏸️ Burst session paused. Use `!burstresume` to continue.")
+
+    @commands.command(name="burstresume", aliases=["bresume"])
+    async def burstresume(self, ctx: commands.Context):
+        """Resume a paused burst session."""
+        if not ctx.guild:
+            return
+        if not await _is_privileged(ctx):
+            await ctx.send("🚫 Only admins or the bot owner can resume a burst session.")
+            return
+
+        guild_id = str(ctx.guild.id)
+        burst    = await catch_db.get_active_burst_session(guild_id)
+        if not burst:
+            await ctx.send("❌ No active burst session in this server.")
+            return
+        if burst["state"] == "active":
+            await ctx.send("▶️ Burst session is already running!")
+            return
+
+        extra_ms = 0
+        if burst.get("paused_at"):
+            try:
+                paused_dt = datetime.fromisoformat(burst["paused_at"]).replace(tzinfo=timezone.utc)
+                extra_ms  = int((_now_utc() - paused_dt).total_seconds() * 1000)
+            except Exception:
+                pass
+
+        await catch_db.resume_burst_session(burst["id"], extra_ms)
+        await ctx.send("▶️ Burst session resumed! Catches in all burst channels are being tracked.")
+
+    @commands.command(name="burststatus", aliases=["bstatus", "burstlive"])
+    async def burststatus(self, ctx: commands.Context):
+        """Show live stats for the active burst session."""
+        if not ctx.guild:
+            return
+        guild_id = str(ctx.guild.id)
+        burst    = await catch_db.get_active_burst_session(guild_id)
+        if not burst:
+            await ctx.send("❌ No active burst session. Start one with `!burststart`.")
+            return
+
+        stats    = await catch_db.get_burst_session_stats(burst["id"], guild_id)
+        channels = await catch_db.get_burst_channels(guild_id)
+        embed    = _burst_session_embed(burst, stats, channels, guild_id, ended=False)
+        await ctx.send(embed=embed)
+
     # ── Slash commands ────────────────────────────────────────────────────────
 
     _catches = app_commands.Group(name="catches", description="Catch tracking stats & leaderboards")
+    _burst   = app_commands.Group(name="burst", description="Manage burst channels", parent=_catches)
 
     @_catches.command(name="stats", description="View catch stats for yourself or another user")
     @app_commands.describe(user="The user to look up (defaults to yourself)")
@@ -766,6 +1073,221 @@ class CatchTrackerCog(commands.Cog):
         embed = _leaderboard_embed(rows, "today", guild_name, guild_id, total)
         embed.title = "📅 Today's Catches"
         await interaction.followup.send(embed=embed)
+
+    # ── /catches burst subgroup ───────────────────────────────────────────────
+
+    @_burst.command(name="add", description="Register burst channels — single, whole category, or from→to range")
+    @app_commands.describe(
+        channel="A single channel to add",
+        category="Add all text channels in this category",
+        category2="Add all channels in a second category (optional)",
+        category3="Add all channels in a third category (optional)",
+        from_channel="Start of a range (inclusive, same category)",
+        to_channel="End of a range (inclusive, same category)",
+    )
+    async def burst_add(
+        self,
+        interaction: discord.Interaction,
+        channel:      Optional[discord.TextChannel]     = None,
+        category:     Optional[discord.CategoryChannel] = None,
+        category2:    Optional[discord.CategoryChannel] = None,
+        category3:    Optional[discord.CategoryChannel] = None,
+        from_channel: Optional[discord.TextChannel]     = None,
+        to_channel:   Optional[discord.TextChannel]     = None,
+    ):
+        if not _is_slash_privileged(interaction):
+            await interaction.response.send_message("🚫 Admin or owner only.", ephemeral=True)
+            return
+
+        targets: list[discord.TextChannel] = []
+
+        if channel:
+            targets.append(channel)
+
+        for cat in [category, category2, category3]:
+            if cat:
+                targets.extend(
+                    ch for ch in cat.channels
+                    if isinstance(ch, discord.TextChannel) and ch not in targets
+                )
+
+        if from_channel and to_channel:
+            cat  = from_channel.category
+            pool = sorted(
+                [ch for ch in interaction.guild.text_channels if ch.category == cat],
+                key=lambda c: c.position,
+            )
+            try:
+                si = next(i for i, c in enumerate(pool) if c.id == from_channel.id)
+                ei = next(i for i, c in enumerate(pool) if c.id == to_channel.id)
+            except StopIteration:
+                await interaction.response.send_message(
+                    "❌ Couldn't resolve range — both channels must be in the same category.",
+                    ephemeral=True,
+                )
+                return
+            if si > ei:
+                si, ei = ei, si
+            for ch in pool[si:ei + 1]:
+                if ch not in targets:
+                    targets.append(ch)
+        elif from_channel or to_channel:
+            await interaction.response.send_message(
+                "⚠️ Provide **both** `from_channel` and `to_channel` for a range.", ephemeral=True
+            )
+            return
+
+        if not targets:
+            await interaction.response.send_message(
+                "⚠️ No channels specified. Use `channel`, `category`, or `from_channel`+`to_channel`.",
+                ephemeral=True,
+            )
+            return
+
+        guild_id = str(interaction.guild_id)
+        added, already = await catch_db.add_burst_channels(
+            guild_id, [str(ch.id) for ch in targets], str(interaction.user.id)
+        )
+
+        embed = discord.Embed(title="📡 Burst Channels Updated", colour=0x57F287)
+        if added:
+            embed.add_field(
+                name=f"✅ Added ({len(added)})",
+                value=_channel_list_str(interaction.guild, added),
+                inline=False,
+            )
+        if already:
+            embed.add_field(
+                name=f"⚪ Already registered ({len(already)})",
+                value=_channel_list_str(interaction.guild, already),
+                inline=False,
+            )
+        embed.set_footer(text=make_footer(guild_id))
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+
+    @_burst.command(name="remove", description="Unregister burst channels — single, whole category, or from→to range")
+    @app_commands.describe(
+        channel="A single channel to remove",
+        category="Remove all channels in this category",
+        category2="Remove all channels in a second category (optional)",
+        category3="Remove all channels in a third category (optional)",
+        from_channel="Start of a range to remove (inclusive)",
+        to_channel="End of a range to remove (inclusive)",
+    )
+    async def burst_remove(
+        self,
+        interaction: discord.Interaction,
+        channel:      Optional[discord.TextChannel]     = None,
+        category:     Optional[discord.CategoryChannel] = None,
+        category2:    Optional[discord.CategoryChannel] = None,
+        category3:    Optional[discord.CategoryChannel] = None,
+        from_channel: Optional[discord.TextChannel]     = None,
+        to_channel:   Optional[discord.TextChannel]     = None,
+    ):
+        if not _is_slash_privileged(interaction):
+            await interaction.response.send_message("🚫 Admin or owner only.", ephemeral=True)
+            return
+
+        targets: list[discord.TextChannel] = []
+
+        if channel:
+            targets.append(channel)
+
+        for cat in [category, category2, category3]:
+            if cat:
+                targets.extend(
+                    ch for ch in cat.channels
+                    if isinstance(ch, discord.TextChannel) and ch not in targets
+                )
+
+        if from_channel and to_channel:
+            cat  = from_channel.category
+            pool = sorted(
+                [ch for ch in interaction.guild.text_channels if ch.category == cat],
+                key=lambda c: c.position,
+            )
+            try:
+                si = next(i for i, c in enumerate(pool) if c.id == from_channel.id)
+                ei = next(i for i, c in enumerate(pool) if c.id == to_channel.id)
+            except StopIteration:
+                await interaction.response.send_message(
+                    "❌ Couldn't resolve range — both channels must be in the same category.",
+                    ephemeral=True,
+                )
+                return
+            if si > ei:
+                si, ei = ei, si
+            for ch in pool[si:ei + 1]:
+                if ch not in targets:
+                    targets.append(ch)
+        elif from_channel or to_channel:
+            await interaction.response.send_message(
+                "⚠️ Provide **both** `from_channel` and `to_channel` for a range.", ephemeral=True
+            )
+            return
+
+        if not targets:
+            await interaction.response.send_message(
+                "⚠️ No channels specified.", ephemeral=True
+            )
+            return
+
+        guild_id = str(interaction.guild_id)
+        removed, not_found = await catch_db.remove_burst_channels(
+            guild_id, [str(ch.id) for ch in targets]
+        )
+
+        embed = discord.Embed(title="📡 Burst Channels Updated", colour=0xED4245)
+        if removed:
+            embed.add_field(
+                name=f"🗑️ Removed ({len(removed)})",
+                value=_channel_list_str(interaction.guild, removed),
+                inline=False,
+            )
+        if not_found:
+            embed.add_field(
+                name=f"⚪ Not registered ({len(not_found)})",
+                value=_channel_list_str(interaction.guild, not_found),
+                inline=False,
+            )
+        embed.set_footer(text=make_footer(guild_id))
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+
+    @_burst.command(name="list", description="Show all registered burst channels")
+    async def burst_list(self, interaction: discord.Interaction):
+        guild_id = str(interaction.guild_id)
+        channel_ids = await catch_db.get_burst_channels(guild_id)
+
+        embed = discord.Embed(title="📡 Registered Burst Channels", colour=0x5865F2)
+        if not channel_ids:
+            embed.description = (
+                "*No burst channels registered yet.*\n"
+                "Use `/catches burst add` to register channels."
+            )
+        else:
+            # Sort by server position
+            sorted_ids = _sort_channel_ids(interaction.guild, channel_ids)
+            embed.description = _channel_list_str(interaction.guild, sorted_ids, numbered=True)
+            embed.set_footer(text=make_footer(guild_id) + f" • {len(channel_ids)} channel(s)")
+
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+
+    @_burst.command(name="clear", description="Remove ALL registered burst channels for this server")
+    async def burst_clear(self, interaction: discord.Interaction):
+        if not _is_slash_privileged(interaction):
+            await interaction.response.send_message("🚫 Admin or owner only.", ephemeral=True)
+            return
+
+        guild_id = str(interaction.guild_id)
+        count    = await catch_db.clear_burst_channels(guild_id)
+
+        embed = discord.Embed(
+            title="🗑️ Burst Channels Cleared",
+            description=f"Removed **{count}** burst channel(s)." if count else "*No channels were registered.*",
+            colour=0xED4245 if count else 0x99AAB5,
+        )
+        embed.set_footer(text=make_footer(guild_id))
+        await interaction.response.send_message(embed=embed, ephemeral=True)
 
 
 async def setup(bot: commands.Bot):
