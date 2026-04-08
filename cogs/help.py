@@ -226,6 +226,82 @@ def _section_incense(gid: str) -> tuple[str, str, discord.Embed]:
     return ("🌿", "Mass Incense Manager", embed)
 
 
+def _section_catch_tracker(gid: str) -> tuple[str, str, discord.Embed]:
+    embed = discord.Embed(
+        title="🎯  Catch Tracker & Grind Sessions",
+        colour=0x5865F2,
+    )
+    embed.add_field(
+        name="🔍 How it works",
+        value=(
+            "The bot silently watches every channel for Operation Dex spawns and catch "
+            "confirmations. Every successful catch is recorded automatically — "
+            "no setup needed for lifetime stats to build up.\n"
+            "Reaction time is measured from the **spawn embed → your `c` command**."
+        ),
+        inline=False,
+    )
+    embed.add_field(
+        name="▶️ Single-channel sessions  *(anyone)*",
+        value=(
+            "`!catchstart [label]`  — Start timing catches in **this** channel\n"
+            "`!catchstop`  — End session and show full summary\n"
+            "`!catchpause`  — Pause the timer (paused time is excluded from duration)\n"
+            "`!catchresume`  — Resume a paused session\n"
+            "`!catchstatus`  — Live stats for the running session\n"
+            "   ↳ Aliases: `!cstart` · `!cstop` · `!cpause` · `!cresume` · `!cstatus`"
+        ),
+        inline=False,
+    )
+    embed.add_field(
+        name="⚡ Multi-channel burst sessions  *(admin only)*",
+        value=(
+            "`!burststart [label]`  — Start a burst session across **all** registered burst channels at once\n"
+            "`!burststop`  — End burst session and show combined summary\n"
+            "`!burstpause` / `!burstresume`  — Pause or resume the burst timer\n"
+            "`!burststatus`  — Live combined stats across all burst channels\n"
+            "   ↳ Aliases: `!bstart` · `!bstop` · `!bpause` · `!bresume` · `!bstatus`"
+        ),
+        inline=False,
+    )
+    embed.add_field(
+        name="📡 Burst channel setup  *(admin only)*",
+        value=(
+            "`/catches burst add`  — Register channels as burst channels\n"
+            "   ↳ `channel:` — single channel\n"
+            "   ↳ `category:` — every text channel in a category *(up to 3 categories at once)*\n"
+            "   ↳ `from_channel:` + `to_channel:` — consecutive range within a category\n"
+            "`/catches burst remove`  — Unregister channels *(same selectors as add)*\n"
+            "`/catches burst list`  — See all registered burst channels\n"
+            "`/catches burst clear`  — Remove all burst channels"
+        ),
+        inline=False,
+    )
+    embed.add_field(
+        name="📊 Stats & leaderboards  *(anyone)*",
+        value=(
+            "`/catches stats [user]`  — Personal stats: today · week · month · all-time · fastest · avg react · streak · unique Pokémon\n"
+            "`/catches leaderboard [period]`  — Server leaderboard with speed bars *(today / week / month / all)*\n"
+            "`/catches today`  — Quick snapshot of today's catches for everyone\n"
+            "`/catches fastest`  — All-time fastest individual catches in the server\n"
+            "`/catches session <id>`  — Replay any past session by its ID"
+        ),
+        inline=False,
+    )
+    embed.add_field(
+        name="💡 Tips",
+        value=(
+            "• Stats build passively in **every** channel — you don't need a session running\n"
+            "• Burst sessions count catches across all registered channels simultaneously\n"
+            "• Single-channel `!catchstart` takes priority over a burst session in the same channel\n"
+            "• Session IDs are shown when a session ends — use `/catches session <id>` to revisit them"
+        ),
+        inline=False,
+    )
+    embed.set_footer(text=make_footer(gid))
+    return ("🎯", "Catch Tracker", embed)
+
+
 def _section_changelog(gid: str) -> tuple[str, str, discord.Embed]:
     embed = discord.Embed(
         title="📋  Changelog",
@@ -356,6 +432,7 @@ class HelpCog(commands.Cog):
             _section_types(gid),
             _section_checklist(gid),
             _section_friends(gid),
+            _section_catch_tracker(gid),
         ]
         if admin:
             sections.append(_section_starboard(gid))
