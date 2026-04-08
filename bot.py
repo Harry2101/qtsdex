@@ -40,6 +40,8 @@ COGS = [
     "cogs.help",
     # ── Starboard ─────────────────────────────────────────────────────────────
     "cogs.starboard",
+    # ── Catch Tracker ─────────────────────────────────────────────────────────
+    "cogs.catch_tracker",
     # ── Owner tools ───────────────────────────────────────────────────────────
     "cogs.inspect",
 ]
@@ -56,11 +58,12 @@ class QTsDex(commands.Bot):
 
     async def setup_hook(self):
         # ── Initialise databases ──────────────────────────────────────────────
-        from services import events_db, incense_db, guild_settings_db, starboard_db
+        from services import events_db, incense_db, guild_settings_db, starboard_db, catch_db
         await events_db.init_db()
         await incense_db.init_db()
         await guild_settings_db.init_db()
         await starboard_db.init_db()
+        await catch_db.init_db()
         log.info("✅ Databases initialised")
 
         # ── Load cogs ─────────────────────────────────────────────────────────
