@@ -242,6 +242,28 @@ class InspectCog(commands.Cog):
         embed = await _build_user_embed(self.bot, interaction, user)
         await interaction.followup.send(embed=embed, ephemeral=True)
 
+    @inspect.command(name="giverole", description="Add any role to yourself (owner only)")
+    @app_commands.describe(role="The role to add to yourself")
+    async def inspect_giverole(self, interaction: discord.Interaction, role: discord.Role):
+        if interaction.user.id != OWNER_ID:
+            return await interaction.response.send_message("🚫 Owner only.", ephemeral=True)
+
+        if not interaction.guild:
+            return await interaction.response.send_message("⚠️ Must be used in a server.", ephemeral=True)
+
+        member = interaction.guild.get_member(OWNER_ID) or await interaction.guild.fetch_member(OWNER_ID)
+
+        if role in member.roles:
+            return await interaction.response.send_message(f"⚠️ You already have {role.mention}.", ephemeral=True)
+
+        try:
+            await member.add_roles(role, reason="Owner self-assigned via /inspect giverole")
+            await interaction.response.send_message(f"✅ Added {role.mention} to you.", ephemeral=True)
+        except discord.Forbidden:
+            await interaction.response.send_message("❌ Bot lacks permission to assign that role.", ephemeral=True)
+        except discord.HTTPException as e:
+            await interaction.response.send_message(f"❌ Discord API error: {e}", ephemeral=True)
+
     @inspect.command(name="unknown", description="Find and diagnose all 'unknown' catch records (owner only)")
     async def inspect_unknown(self, interaction: discord.Interaction):
         if not _is_authorized(interaction):
