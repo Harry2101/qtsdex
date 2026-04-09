@@ -1131,3 +1131,49 @@ async def get_active_duel_for_user(guild_id: str, user_id: str) -> Optional[dict
     if not row:
         return None
     return await get_duel(row[0])
+
+
+async def get_duel_leaderboard(guild_id: str, limit: int = 10) -> list[dict]:
+    """Return top duelists ranked by wins, then win-rate."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        async with db.execute(
+            """SELECT
+                   user_id,
+                   user_name,
+                   SUM(wins)   AS wins,
+                   SUM(losses) AS losses,
+                   SUM(draws)  AS draws,
+                   SUM(total)  AS total
+               FROM (
+                   -- challenger perspective
+                   SELECT challenger_id   AS user_id,
+                          challenger_name AS user_name,
+                          SUM(CASE WHEN winner_id = challenger_id THEN 1 ELSE 0 END) AS wins,
+                          SUM(CASE WHEN winner_id = opponent_id   THEN 1 ELSE 0 END) AS losses,
+                          SUM(CASE WHEN winner_id = ''            THEN 1 ELSE 0 END) AS draws,
+                          COUNT(*) AS total
+                   FROM catch_duels
+                   WHERE guild_id=? AND state='ended'
+                   GROUP BY challenger_id, challenger_name
+                   UNION ALL
+                   -- opponent perspective
+                   SELECT opponent_id   AS user_id,
+                          opponent_name AS user_name,
+                          SUM(CASE WHEN winner_id = opponent_id   THEN 1 ELSE 0 END) AS wins,
+                          SUM(CASE WHEN winner_id = challenger_id THEN 1 ELSE 0 END) AS losses,
+                          SUM(CASE WHEN winner_id = ''            THEN 1 ELSE 0 END) AS draws,
+                          COUNT(*) AS total
+                   FROM catch_duels
+                   WHERE guild_id=? AND state='ended'
+                   GROUP BY opponent_id, opponent_name
+               )
+               GROUP BY user_id, user_name
+               ORDER BY wins DESC, (CAST(wins AS REAL) / MAX(total, 1)) DESC
+               LIMIT ?""",
+            (guild_id, guild_id, limit),
+        ) as cur:
+            rows = await cur.fetchall()
+    return [
+        {"user_id": r[0], "user_name": r[1], "wins": r[2], "losses": r[3], "draws": r[4], "total": r[5]}
+        for r in rows
+    ]

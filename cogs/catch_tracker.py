@@ -328,14 +328,17 @@ def _duel_invite_embed(
         colour=0xFF6B35,
     )
     embed.description = (
-        f"**{challenger.display_name}** is challenging **{opponent.display_name}** "
-        f"to a 1v1 blitz catching duel!\n"
-        f"**{burst_count}** burst channel(s) in play."
+        f"**{challenger.display_name}** ⚔️ **{opponent.display_name}**\n"
+        f"*{challenger.display_name} is challenging you to a blitz catching duel!*\n"
+        f"**{burst_count}** burst channel(s) in the arena."
     )
-    embed.add_field(name="🎮 Mode", value=f"`{_mode_label(mode, mode_value)}`", inline=True)
-    embed.add_field(name="📡 Arena", value=f"`{burst_count}` burst channels", inline=True)
-    embed.add_field(name="⏳ Expires", value="Invite expires in 60s", inline=True)
-    embed.set_thumbnail(url=challenger.display_avatar.url)
+    embed.add_field(name="🎮 Mode",    value=f"`{_mode_label(mode, mode_value)}`", inline=True)
+    embed.add_field(name="📡 Arena",   value=f"`{burst_count}` burst channels",   inline=True)
+    embed.add_field(name="⏳ Expires", value="60s to respond",                    inline=True)
+    # Challenger shown as author (top-left avatar + name), opponent as thumbnail (top-right)
+    embed.set_author(name=f"{challenger.display_name} challenges you!",
+                     icon_url=challenger.display_avatar.url)
+    embed.set_thumbnail(url=opponent.display_avatar.url)
     embed.set_footer(text=f"Duel #{duel_id} · {make_footer(guild_id)}")
     return embed
 
@@ -1862,6 +1865,42 @@ class CatchTrackerCog(commands.Cog):
         )
         if h2h["draws"]:
             embed.add_field(name="Draws", value=str(h2h["draws"]), inline=False)
+        embed.set_footer(text=make_footer(guild_id))
+        await interaction.followup.send(embed=embed)
+
+    @_duel_group.command(name="leaderboard", description="Top duelists in the server by wins")
+    async def duel_leaderboard(self, interaction: discord.Interaction):
+        await interaction.response.defer()
+        guild_id = str(interaction.guild_id)
+        rows     = await catch_db.get_duel_leaderboard(guild_id, limit=10)
+
+        embed = discord.Embed(
+            title="⚔️ Duel Leaderboard",
+            colour=0xFF6B35,
+        )
+
+        if not rows:
+            embed.description = "*No duels have been played yet!*"
+            embed.set_footer(text=make_footer(guild_id))
+            await interaction.followup.send(embed=embed)
+            return
+
+        medals = ["🥇", "🥈", "🥉"]
+        lines  = []
+        for i, row in enumerate(rows):
+            medal    = medals[i] if i < 3 else f"**{i+1}.**"
+            name     = row.get("user_name") or f"<@{row['user_id']}>"
+            wins     = row["wins"]
+            losses   = row["losses"]
+            draws    = row["draws"]
+            total    = row["total"]
+            win_rate = round(wins / total * 100) if total > 0 else 0
+            draws_str = f" / {draws}D" if draws else ""
+            lines.append(
+                f"{medal} **{name}** — `{wins}W / {losses}L{draws_str}` · {win_rate}% WR · {total} duels"
+            )
+
+        embed.description = "\n".join(lines)
         embed.set_footer(text=make_footer(guild_id))
         await interaction.followup.send(embed=embed)
 
