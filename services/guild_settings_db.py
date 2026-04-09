@@ -132,7 +132,7 @@ def get_bot_name(guild_id: str) -> str:
     return _cache.get(guild_id, {}).get("bot_name", _DEFAULT_NAME)
 
 
-def make_footer(guild_id: str = "", suffix: str = "powered by PokéAPI") -> str:
+def make_footer(guild_id: str = "", suffix: str = "") -> str:
     """Build a branded embed footer string for the given guild."""
     name = get_bot_name(guild_id) if guild_id else _DEFAULT_NAME
     return f"{name}  •  {suffix}"

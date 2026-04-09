@@ -96,7 +96,7 @@ class WeaknessCog(commands.Cog):
             if types_list:
                 embed.add_field(name=label_str, value=_fmt(types_list), inline=False)
 
-        embed.set_footer(text=make_footer(str(interaction.guild_id or ""), "Gen 6+ rules  •  powered by PokéAPI"))
+        embed.set_footer(text=make_footer(str(interaction.guild_id or ""), "Gen 6+ rules  •  "))
         await interaction.followup.send(embed=embed)
 
 

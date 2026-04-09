@@ -127,7 +127,7 @@ def build_sprite_embed(data: dict, shiny: bool, guild_id: str = "") -> discord.E
     else:
         embed.description += "\n\n*No sprite available for this variant.*"
 
-    embed.set_footer(text=make_footer(guild_id, "Click image to zoom  •  powered by PokéAPI"))
+    embed.set_footer(text=make_footer(guild_id, "Click image to zoom  •  "))
     return embed
 
 

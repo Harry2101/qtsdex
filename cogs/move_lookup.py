@@ -87,7 +87,7 @@ class MoveLookupCog(commands.Cog):
         if flavor:
             embed.add_field(name="📜 Game Description", value=f"*{flavor[:300]}*", inline=False)
 
-        suffix = f"Category: {category.title()}" if category else "powered by PokéAPI"
+        suffix = f"Category: {category.title()}" if category else ""
         embed.set_footer(text=make_footer(guild_id, suffix))
         return embed
 

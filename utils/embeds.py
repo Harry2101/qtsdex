@@ -6,7 +6,7 @@ Shared embed helpers, colours, emoji, and stat rendering.
 import discord
 from services.guild_settings_db import make_footer
 
-FOOTER = "King's Dex  •  powered by PokéAPI"  # fallback constant — use make_footer(guild_id) when guild is known
+FOOTER = "King's Dex  •  "  # fallback constant — use make_footer(guild_id) when guild is known
 
 TYPE_COLOURS: dict[str, int] = {
     "normal":   0xA8A77A, "fire":     0xEE8130, "water":    0x6390F0,

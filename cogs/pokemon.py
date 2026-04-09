@@ -229,7 +229,7 @@ def build_battle_embed(
         inline=False,
     )
 
-    embed.set_footer(text=make_footer(guild_id, "Battle Card  •  powered by PokéAPI"))
+    embed.set_footer(text=make_footer(guild_id, "Battle Card  •  "))
     return embed
 
 

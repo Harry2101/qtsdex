@@ -160,7 +160,7 @@ def _checklist_embed(
     if total == 0:
         embed.description = "*Empty list.*\nAdd Pokémon with `/checklist add`."
         embed.set_footer(
-            text=make_footer(guild_id, f"{user.display_name}  •  {sort_label}  •  powered by PokéAPI")
+            text=make_footer(guild_id, f"{user.display_name}  •  {sort_label}  •  ")
         )
         return embed, 1
 
@@ -208,7 +208,7 @@ def _checklist_embed(
 
     page_str = f"  •  Page {page + 1}/{total_pages}" if total_pages > 1 else ""
     embed.set_footer(
-        text=make_footer(guild_id, f"{user.display_name}  •  {sort_label}{page_str}  •  powered by PokéAPI")
+        text=make_footer(guild_id, f"{user.display_name}  •  {sort_label}{page_str}  •  ")
     )
     return embed, total_pages
 
@@ -1017,7 +1017,7 @@ class EventsCog(commands.Cog):
             embed.add_field(name=f"Not found ({len(not_found)})",
                             value=", ".join(not_found[:15]), inline=False)
 
-        embed.set_footer(text=make_footer(gid, f"{total_now} Pokémon on list  •  powered by PokéAPI"))
+        embed.set_footer(text=make_footer(gid, f"{total_now} Pokémon on list  •  "))
 
         if added and unique:
             sprite = await _get_sprite(unique[0][0])
@@ -1087,7 +1087,7 @@ class EventsCog(commands.Cog):
             display = ", ".join(not_on_list[:15])
             embed.add_field(name=f"Not on list ({len(not_on_list)})", value=display, inline=False)
 
-        embed.set_footer(text=make_footer(str(interaction.guild_id or ""), f"{total_now} Pokémon remaining  •  powered by PokéAPI"))
+        embed.set_footer(text=make_footer(str(interaction.guild_id or ""), f"{total_now} Pokémon remaining  •  "))
         await interaction.followup.send(embed=embed)
 
     # /checklist view ─────────────────────────────────────────────────────────
