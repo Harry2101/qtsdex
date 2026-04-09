@@ -302,6 +302,46 @@ def _section_catch_tracker(gid: str) -> tuple[str, str, discord.Embed]:
     return ("🎯", "Catch Tracker", embed)
 
 
+def _section_duels(gid: str) -> tuple[str, str, discord.Embed]:
+    embed = discord.Embed(
+        title="⚔️  Catch Duels",
+        colour=0xFF6B35,
+    )
+    embed.add_field(
+        name="Starting a duel",
+        value=(
+            "`!duel @user`  — Free duel: catch for fun, no winner declared\n"
+            "`!duel @user time 15m`  — Timed duel: most catches in X minutes wins\n"
+            "   ↳ Valid times: `5m` · `10m` · `15m` · `30m` · `1h`\n"
+            "`!duel @user pokemon 500`  — Race: first to catch X Pokémon wins\n"
+            "   ↳ Aliases: `!catchduel` · `!1v1`\n\n"
+            "The opponent gets **60 seconds** to accept or decline via buttons."
+        ),
+        inline=False,
+    )
+    embed.add_field(
+        name="During a duel",
+        value=(
+            "`!duelforfeit`  — End your current duel early (counted as a forfeit)\n"
+            "   ↳ Aliases: `!duelstop` · `!duelend`\n\n"
+            "Catches are tracked automatically across all registered burst channels.\n"
+            "Timed duels end when the timer runs out; race duels end when someone hits the target."
+        ),
+        inline=False,
+    )
+    embed.add_field(
+        name="Stats & leaderboards",
+        value=(
+            "`/duel record [user]`  — Win/loss/draw record with win rate\n"
+            "`/duel leaderboard`  — Top 10 duelists in the server by wins\n"
+            "`/duel h2h @player1 @player2`  — Head-to-head record between two players"
+        ),
+        inline=False,
+    )
+    embed.set_footer(text=make_footer(gid))
+    return ("⚔️", "Catch Duels", embed)
+
+
 def _section_changelog(gid: str) -> tuple[str, str, discord.Embed]:
     embed = discord.Embed(
         title="📋  Changelog",
@@ -433,6 +473,7 @@ class HelpCog(commands.Cog):
             _section_checklist(gid),
             _section_friends(gid),
             _section_catch_tracker(gid),
+            _section_duels(gid),
         ]
         if admin:
             sections.append(_section_starboard(gid))
