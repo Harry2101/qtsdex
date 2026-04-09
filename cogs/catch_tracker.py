@@ -85,10 +85,10 @@ _SPAWN_TITLE_RE = re.compile(
     re.IGNORECASE,
 )
 
-# Catch command: <@BOT_ID> c <pokemon name>
+# Catch command: <@BOT_ID> c <pokemon name>  OR  <@BOT_ID> catch <pokemon name>
 # Handles optional ! prefix, case-insensitive
 _CATCH_CMD_RE = re.compile(
-    r"^<@!?(\d+)>\s+c\s+(.+)",
+    r"^<@!?(\d+)>\s+(?:catch|c)\s+(.+)",
     re.IGNORECASE,
 )
 
@@ -662,6 +662,28 @@ class CatchTrackerCog(commands.Cog):
         """Normalise a pokemon name scraped from a message."""
         return raw.strip().lower().replace("-", " ").title()
 
+    async def _catch_timeout(
+        self,
+        guild_id: str,
+        channel_id: str,
+        pend_key: tuple,
+        timeout: float = 15.0,
+    ) -> None:
+        """Wait for confirmation; if the catch is still pending after timeout, record it as failed."""
+        await asyncio.sleep(timeout)
+        pend = _pending_catches.pop(pend_key, None)
+        if pend is None:
+            return  # already resolved (success or explicit failure)
+        pokemon_name = pend.get("pokemon_typed") or pend["spawn"].get("pokemon", "")
+        log.debug(f"⏱️ Catch timed out (no confirmation): {pend['catcher_name']} → {pokemon_name}")
+        await catch_db.record_failed_catch(
+            guild_id     = guild_id,
+            channel_id   = channel_id,
+            user_id      = pend["catcher_id"],
+            user_name    = pend["catcher_name"],
+            pokemon_name = pokemon_name,
+        )
+
     # ── Message listener ──────────────────────────────────────────────────────
 
     @commands.Cog.listener()
@@ -713,6 +735,10 @@ class CatchTrackerCog(commands.Cog):
                             "ts":            _now_utc(),
                         }
                         log.debug(f"Catch attempt: {message.author.display_name} → {pokemon_attempted}")
+                        # Schedule a timeout: if not confirmed in 15s, mark as failed
+                        asyncio.create_task(
+                            self._catch_timeout(guild_id, channel_id, pend_key)
+                        )
             return  # not a confirmation yet
 
         # ── 3. Confirmation detection (Op Dex response) ───────────────────────
