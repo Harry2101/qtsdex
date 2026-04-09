@@ -51,6 +51,24 @@ from discord.ext import commands
 from services import catch_db, guild_settings_db
 from services.guild_settings_db import make_footer
 
+# ── Duel mode constants ───────────────────────────────────────────────────────
+DUEL_MODE_FREE    = "free"      # just catch for fun, no winner
+DUEL_MODE_TIME    = "time"      # X seconds, whoever has more catches wins
+DUEL_MODE_POKEMON = "pokemon"   # first to catch X pokemon wins
+
+_DUEL_INVITE_TIMEOUT = 60       # seconds opponent has to accept/decline
+
+# In-memory duel state: duel_id → DuelState
+_active_duels: dict[int, "DuelState"] = {}
+
+# Failed-catch detection: Op Dex failure keywords
+_FAIL_KEYWORDS = [
+    "that's not", "wrong", "escape", "ran away",
+    "got away", "incorrect", "not the right", "not right",
+    "failed", "miss",
+]
+_FAIL_RE = re.compile("|".join(_FAIL_KEYWORDS), re.IGNORECASE)
+
 log = logging.getLogger("qtsdex.catch_tracker")
 
 OWNER_ID     = int(os.getenv("OWNER_ID", "145065060568530944"))
@@ -242,6 +260,179 @@ def _burst_session_embed(
 
     embed.set_footer(text=make_footer(guild_id) + f" • {len(channel_ids)} burst channel(s)")
     return embed
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Duel state (in-memory)
+# ─────────────────────────────────────────────────────────────────────────────
+
+class DuelState:
+    """Tracks a live duel between two players."""
+    def __init__(self, duel_id: int, guild_id: str, channel_id: str,
+                 challenger_id: str, opponent_id: str,
+                 mode: str, mode_value: int):
+        self.duel_id       = duel_id
+        self.guild_id      = guild_id
+        self.channel_id    = channel_id
+        self.challenger_id = challenger_id
+        self.opponent_id   = opponent_id
+        self.mode          = mode
+        self.mode_value    = mode_value  # seconds or pokemon count
+        self.ch_catches    = 0
+        self.op_catches    = 0
+        self.started_at    = _now_utc()
+        self._timer_task: Optional[asyncio.Task] = None
+        self.ended         = False
+
+    def record(self, user_id: str) -> tuple[int, int]:
+        """Increment catch count. Returns (ch_catches, op_catches)."""
+        if user_id == self.challenger_id:
+            self.ch_catches += 1
+        elif user_id == self.opponent_id:
+            self.op_catches += 1
+        return self.ch_catches, self.op_catches
+
+    def elapsed_s(self) -> int:
+        return int((_now_utc() - self.started_at).total_seconds())
+
+    def winner_id(self) -> str:
+        """Return winner_id or '' for draw."""
+        if self.ch_catches > self.op_catches:
+            return self.challenger_id
+        if self.op_catches > self.ch_catches:
+            return self.opponent_id
+        return ""
+
+
+def _mode_label(mode: str, mode_value: int) -> str:
+    if mode == DUEL_MODE_FREE:
+        return "Free Catch (no limit)"
+    if mode == DUEL_MODE_TIME:
+        return f"Time Limit — {_fmt_duration(mode_value)}"
+    if mode == DUEL_MODE_POKEMON:
+        return f"First to {mode_value} Pokémon"
+    return mode
+
+
+def _duel_invite_embed(
+    challenger: discord.Member,
+    opponent: discord.Member,
+    mode: str,
+    mode_value: int,
+    burst_count: int,
+    duel_id: int,
+    guild_id: str,
+) -> discord.Embed:
+    embed = discord.Embed(
+        title="⚔️ 1v1 Blitz Catching Challenge!",
+        colour=0xFF6B35,
+    )
+    embed.description = (
+        f"**{challenger.display_name}** is challenging **{opponent.display_name}** "
+        f"to a 1v1 blitz catching duel!\n"
+        f"**{burst_count}** burst channel(s) in play."
+    )
+    embed.add_field(name="🎮 Mode", value=f"`{_mode_label(mode, mode_value)}`", inline=True)
+    embed.add_field(name="📡 Arena", value=f"`{burst_count}` burst channels", inline=True)
+    embed.add_field(name="⏳ Expires", value="Invite expires in 60s", inline=True)
+    embed.set_thumbnail(url=challenger.display_avatar.url)
+    embed.set_footer(text=f"Duel #{duel_id} · {make_footer(guild_id)}")
+    return embed
+
+
+def _duel_status_embed(
+    state: DuelState,
+    ch_name: str,
+    op_name: str,
+    ch_avatar: str,
+    op_avatar: str,
+    ended: bool = False,
+    winner_id: str = "",
+    guild_id: str = "",
+) -> discord.Embed:
+    ch_c = state.ch_catches
+    op_c = state.op_catches
+    elapsed = _fmt_duration(state.elapsed_s())
+
+    if ended:
+        if not winner_id:
+            title = "⚔️ Duel Ended — **Draw!**"
+            colour = 0x99AAB5
+        elif winner_id == state.challenger_id:
+            title = f"⚔️ Duel Ended — 🏆 {ch_name} Wins!"
+            colour = 0x57F287
+        else:
+            title = f"⚔️ Duel Ended — 🏆 {op_name} Wins!"
+            colour = 0x57F287
+    else:
+        title = "⚔️ Duel — Live"
+        colour = 0xFF6B35
+
+    embed = discord.Embed(title=title, colour=colour)
+    embed.add_field(
+        name=f"🔴 {ch_name}",
+        value=f"`{ch_c}` catches",
+        inline=True,
+    )
+    embed.add_field(
+        name="vs",
+        value=f"`{elapsed}`" if not ended else "—",
+        inline=True,
+    )
+    embed.add_field(
+        name=f"🔵 {op_name}",
+        value=f"`{op_c}` catches",
+        inline=True,
+    )
+    embed.add_field(
+        name="🎮 Mode",
+        value=f"`{_mode_label(state.mode, state.mode_value)}`",
+        inline=False,
+    )
+    embed.set_thumbnail(url=ch_avatar)
+    embed.set_footer(text=f"Duel #{state.duel_id}" + (f" · {make_footer(guild_id)}" if guild_id else ""))
+    return embed
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Duel invite view (Accept / Decline buttons)
+# ─────────────────────────────────────────────────────────────────────────────
+
+class DuelInviteView(discord.ui.View):
+    def __init__(self, duel_id: int, opponent_id: int, cog: "CatchTrackerCog"):
+        super().__init__(timeout=_DUEL_INVITE_TIMEOUT)
+        self.duel_id     = duel_id
+        self.opponent_id = opponent_id
+        self.cog         = cog
+        self.result      = None  # "accepted" | "declined" | None (timeout)
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if interaction.user.id != self.opponent_id:
+            await interaction.response.send_message(
+                "Only the challenged player can respond.", ephemeral=True
+            )
+            return False
+        return True
+
+    @discord.ui.button(label="Accept ✅", style=discord.ButtonStyle.success)
+    async def accept(self, interaction: discord.Interaction, button: discord.ui.Button):
+        self.result = "accepted"
+        self.stop()
+        await self.cog._start_duel(interaction, self.duel_id)
+
+    @discord.ui.button(label="Decline ❌", style=discord.ButtonStyle.danger)
+    async def decline(self, interaction: discord.Interaction, button: discord.ui.Button):
+        self.result = "declined"
+        self.stop()
+        await catch_db.decline_duel(self.duel_id)
+        embed = discord.Embed(
+            description=f"❌ {interaction.user.display_name} declined the duel.",
+            colour=0xED4245,
+        )
+        await interaction.response.edit_message(embed=embed, view=None)
+
+    async def on_timeout(self):
+        await catch_db.expire_duel(self.duel_id)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -529,12 +720,49 @@ class CatchTrackerCog(commands.Cog):
                 if emb.description:
                     text += "\n" + emb.description
 
-            if not _CONFIRM_CATCH_ID_RE.search(text):
-                return  # not a catch confirmation
+            is_success = bool(_CONFIRM_CATCH_ID_RE.search(text))
+            is_failure = (not is_success) and bool(_FAIL_RE.search(text))
 
+            # ── 3a. Failed catch ──────────────────────────────────────────────
+            if is_failure:
+                # Identify which pending catch this failure belongs to
+                now = _now_utc()
+                fail_key = None
+                fail_age = float("inf")
+                for pend_key, pend in list(_pending_catches.items()):
+                    pk_guild, pk_channel, _ = pend_key
+                    if pk_guild != guild_id or pk_channel != channel_id:
+                        continue
+                    age = (now - pend["ts"]).total_seconds()
+                    if age > 30:
+                        del _pending_catches[pend_key]
+                        continue
+                    if age < fail_age:
+                        fail_age = age
+                        fail_key = pend_key
+                if message.mentions:
+                    for uid in message.mentions:
+                        k = (guild_id, channel_id, str(uid.id))
+                        if k in _pending_catches:
+                            fail_key = k
+                            break
+                if fail_key:
+                    pend = _pending_catches.pop(fail_key)
+                    await catch_db.record_failed_catch(
+                        guild_id     = guild_id,
+                        channel_id   = channel_id,
+                        user_id      = pend["catcher_id"],
+                        user_name    = pend["catcher_name"],
+                        pokemon_name = pend.get("pokemon_typed") or pend["spawn"].get("pokemon", ""),
+                    )
+                    log.debug(f"❌ Failed catch: {pend['catcher_name']}")
+                return
+
+            if not is_success:
+                return  # not a catch confirmation, not a failure — ignore
+
+            # ── 3b. Successful catch ──────────────────────────────────────────
             # Find which pending catch this confirms.
-            # Op Dex usually mentions or replies to the catcher; we scan all
-            # pending catches in this channel for the closest one.
             now = _now_utc()
             best_key  = None
             best_age  = float("inf")
@@ -570,7 +798,6 @@ class CatchTrackerCog(commands.Cog):
             reaction_ms = max(0, reaction_ms)
 
             # Extract confirmed pokemon name from the confirmation message
-            # (prefer the bot's text over what the user typed, as spelling may differ)
             pkmn_match = _CONFIRM_POKEMON_RE.search(text)
             pokemon_name = (
                 self._clean_pokemon_name(pkmn_match.group(1))
@@ -597,7 +824,6 @@ class CatchTrackerCog(commands.Cog):
                 session_id = session["id"]
                 is_session = True
             elif burst and burst["state"] == "active" and in_burst_ch:
-                # Each burst channel needs its own catch_sessions FK row — create lazily
                 session_id = await self._get_or_create_burst_proxy_session(
                     guild_id, channel_id, burst
                 )
@@ -627,19 +853,30 @@ class CatchTrackerCog(commands.Cog):
 
             # Flush daily aggregate for this user
             await catch_db.upsert_daily(
-                guild_id     = guild_id,
-                user_id      = catcher_id,
-                user_name    = catcher_name,
-                day          = today_str,
-                catches      = 1,
-                total_ms     = reaction_ms,
-                fastest_ms   = reaction_ms,
+                guild_id      = guild_id,
+                user_id       = catcher_id,
+                user_name     = catcher_name,
+                day           = today_str,
+                catches       = 1,
+                total_ms      = reaction_ms,
+                fastest_ms    = reaction_ms,
                 pokemon_names = [pokemon_name],
             )
 
             log.info(
                 f"✅ Catch recorded: {catcher_name} caught {pokemon_name} "
                 f"in {reaction_ms}ms (session={'yes' if is_session else 'passive'})"
+            )
+
+            # ── 3c. Duel tracking ─────────────────────────────────────────────
+            await self._on_duel_catch(
+                guild_id     = guild_id,
+                channel_id   = channel_id,
+                catcher_id   = catcher_id,
+                catcher_name = catcher_name,
+                pokemon_name = pokemon_name,
+                reaction_ms  = reaction_ms,
+                caught_at    = caught_at,
             )
 
     # ── Session helpers ───────────────────────────────────────────────────────
@@ -680,6 +917,144 @@ class CatchTrackerCog(commands.Cog):
         )
         self._burst_proxy_sessions[cache_key] = sid
         return sid
+
+    # ── Duel helpers ──────────────────────────────────────────────────────────
+
+    async def _on_duel_catch(
+        self,
+        guild_id: str,
+        channel_id: str,
+        catcher_id: str,
+        catcher_name: str,
+        pokemon_name: str,
+        reaction_ms: int,
+        caught_at: str,
+    ) -> None:
+        """Called after every confirmed catch. Updates any active duel."""
+        duel_state = None
+        for ds in _active_duels.values():
+            if ds.guild_id != guild_id:
+                continue
+            if catcher_id not in (ds.challenger_id, ds.opponent_id):
+                continue
+            duel_state = ds
+            break
+
+        if duel_state is None or duel_state.ended:
+            return
+
+        is_challenger = (catcher_id == duel_state.challenger_id)
+        ch_c = await catch_db.record_duel_catch(
+            duel_id      = duel_state.duel_id,
+            user_id      = catcher_id,
+            pokemon_name = pokemon_name,
+            reaction_ms  = reaction_ms,
+            caught_at    = caught_at,
+            is_challenger = is_challenger,
+        )
+        duel_state.record(catcher_id)
+
+        # Check win condition
+        mode = duel_state.mode
+        if mode == DUEL_MODE_POKEMON and duel_state.mode_value > 0:
+            if duel_state.ch_catches >= duel_state.mode_value or duel_state.op_catches >= duel_state.mode_value:
+                await self._end_duel(duel_state, reason="pokemon")
+        # Time-based is handled by a timer task; free mode never auto-ends
+
+    async def _start_duel(self, interaction: discord.Interaction, duel_id: int) -> None:
+        """Called when opponent accepts — marks duel active and starts timer if needed."""
+        started_at = _now_utc().strftime("%Y-%m-%d %H:%M:%S")
+        ok = await catch_db.accept_duel(duel_id, started_at)
+        if not ok:
+            await interaction.response.send_message("❌ Duel could not be started.", ephemeral=True)
+            return
+
+        duel = await catch_db.get_duel(duel_id)
+        if not duel:
+            await interaction.response.send_message("❌ Duel not found.", ephemeral=True)
+            return
+
+        ds = DuelState(
+            duel_id       = duel_id,
+            guild_id      = duel["guild_id"],
+            channel_id    = duel["channel_id"],
+            challenger_id = duel["challenger_id"],
+            opponent_id   = duel["opponent_id"],
+            mode          = duel["mode"],
+            mode_value    = duel["mode_value"],
+        )
+        _active_duels[duel_id] = ds
+
+        # Fetch member objects for display
+        guild = interaction.guild
+        ch_member = guild.get_member(int(duel["challenger_id"])) if guild else None
+        op_member = interaction.user
+
+        ch_name   = duel["challenger_name"]
+        op_name   = duel["opponent_name"]
+        ch_avatar = ch_member.display_avatar.url if ch_member else ""
+        op_avatar = op_member.display_avatar.url
+
+        embed = _duel_status_embed(ds, ch_name, op_name, ch_avatar, op_avatar,
+                                   guild_id=duel["guild_id"])
+        embed.description = (
+            f"⚔️ Duel started! Both players are now catching across burst channels.\n"
+            f"{_mode_label(duel['mode'], duel['mode_value'])}"
+        )
+        await interaction.response.edit_message(embed=embed, view=None)
+
+        # Start timer task for time-based duels
+        if ds.mode == DUEL_MODE_TIME and ds.mode_value > 0:
+            async def _timer():
+                await asyncio.sleep(ds.mode_value)
+                if not ds.ended:
+                    await self._end_duel(ds, reason="time")
+            ds._timer_task = asyncio.create_task(_timer())
+
+    async def _end_duel(self, ds: DuelState, reason: str = "manual") -> None:
+        """Finalise a duel, post result to the original channel."""
+        if ds.ended:
+            return
+        ds.ended = True
+        if ds._timer_task and not ds._timer_task.done():
+            ds._timer_task.cancel()
+
+        winner_id = ds.winner_id()
+        ended_at  = _now_utc().strftime("%Y-%m-%d %H:%M:%S")
+        await catch_db.end_duel(ds.duel_id, winner_id, ended_at)
+        _active_duels.pop(ds.duel_id, None)
+
+        # Fetch h2h for the result
+        h2h = await catch_db.get_duel_head_to_head(ds.guild_id, ds.challenger_id, ds.opponent_id)
+
+        # Try to post result in the duel's channel
+        channel = self.bot.get_channel(int(ds.channel_id))
+        if not channel:
+            return
+
+        guild = channel.guild
+        ch_member = guild.get_member(int(ds.challenger_id))
+        op_member = guild.get_member(int(ds.opponent_id))
+        ch_name   = ch_member.display_name if ch_member else ds.challenger_id
+        op_name   = op_member.display_name if op_member else ds.opponent_id
+        ch_avatar = ch_member.display_avatar.url if ch_member else ""
+        op_avatar = op_member.display_avatar.url if op_member else ""
+
+        embed = _duel_status_embed(ds, ch_name, op_name, ch_avatar, op_avatar,
+                                   ended=True, winner_id=winner_id, guild_id=ds.guild_id)
+
+        reason_str = {
+            "pokemon": f"First to {ds.mode_value} caught!",
+            "time":    f"Time's up! ({_fmt_duration(ds.mode_value)})",
+            "manual":  "Duel ended manually.",
+        }.get(reason, "")
+
+        h2h_str = f"{ch_name} {h2h['a_wins']}–{h2h['b_wins']} {op_name} all-time"
+        embed.add_field(name="📊 Head-to-Head", value=h2h_str, inline=False)
+        if reason_str:
+            embed.add_field(name="🏁 Reason", value=reason_str, inline=False)
+
+        await channel.send(embed=embed)
 
     # ── Prefix commands ───────────────────────────────────────────────────────
 
@@ -978,8 +1353,16 @@ class CatchTrackerCog(commands.Cog):
     _burst   = app_commands.Group(name="burst", description="Manage burst channels", parent=_catches)
 
     @_catches.command(name="stats", description="View catch stats for yourself or another user")
-    @app_commands.describe(user="The user to look up (defaults to yourself)")
-    async def catches_stats(self, interaction: discord.Interaction, user: Optional[discord.Member] = None):
+    @app_commands.describe(
+        user="The user to look up (defaults to yourself)",
+        show_accuracy="Show accuracy / failed catch rate (default: yes)",
+    )
+    async def catches_stats(
+        self,
+        interaction: discord.Interaction,
+        user: Optional[discord.Member] = None,
+        show_accuracy: bool = True,
+    ):
         await interaction.response.defer()
         guild_id  = str(interaction.guild_id)
         target    = user or interaction.user
@@ -996,6 +1379,23 @@ class CatchTrackerCog(commands.Cog):
             return
 
         embed = _stats_embed(stats, target, guild_id)
+
+        if show_accuracy:
+            acc = await catch_db.get_user_accuracy(guild_id, str(target.id))
+            if acc["total_attempts"] > 0:
+                bar_filled = round(acc["accuracy_pct"] / 10)
+                bar = "🟩" * bar_filled + "🟥" * (10 - bar_filled)
+                embed.add_field(
+                    name="🎯 Accuracy",
+                    value=(
+                        f"{bar}\n"
+                        f"**{acc['accuracy_pct']}%** — "
+                        f"{acc['success']} caught / {acc['failed']} missed "
+                        f"({acc['total_attempts']} attempts)"
+                    ),
+                    inline=False,
+                )
+
         await interaction.followup.send(embed=embed)
 
     @_catches.command(name="leaderboard", description="Catch leaderboard for the server")
@@ -1288,6 +1688,212 @@ class CatchTrackerCog(commands.Cog):
         )
         embed.set_footer(text=make_footer(guild_id))
         await interaction.response.send_message(embed=embed, ephemeral=True)
+
+    # ── Duel prefix command ───────────────────────────────────────────────────
+
+    @commands.command(name="duel", aliases=["catchduel", "1v1"])
+    async def duel(self, ctx: commands.Context, opponent: discord.Member, *, args: str = ""):
+        """
+        Challenge someone to a 1v1 blitz catching duel.
+
+        Modes (append after @user):
+          (nothing)          → free  — catch for fun, no winner declared
+          time 30m           → time  — 30 min timer, most catches wins (also 5m, 10m, 15m, 1h)
+          pokemon 500        → first to 500 catches wins (also 1000, 2000, etc.)
+
+        Examples:
+          !duel @Alice
+          !duel @Alice time 15m
+          !duel @Alice pokemon 1000
+        """
+        if not ctx.guild:
+            return
+        if opponent.bot or opponent.id == ctx.author.id:
+            await ctx.send("❌ You can't duel a bot or yourself.")
+            return
+
+        guild_id   = str(ctx.guild.id)
+        channel_id = str(ctx.channel.id)
+
+        # Check neither player is already in a duel
+        for uid in (str(ctx.author.id), str(opponent.id)):
+            existing = await catch_db.get_active_duel_for_user(guild_id, uid)
+            if existing:
+                await ctx.send(f"❌ <@{uid}> is already in an active duel.")
+                return
+
+        # Parse mode
+        mode       = DUEL_MODE_FREE
+        mode_value = 0
+        args_lower = args.strip().lower()
+
+        if args_lower.startswith("time"):
+            # e.g. "time 15m" or "time 30"
+            parts = args_lower.split()
+            raw   = parts[1] if len(parts) > 1 else ""
+            secs  = 0
+            if raw.endswith("h"):
+                secs = int(raw[:-1]) * 3600
+            elif raw.endswith("m"):
+                secs = int(raw[:-1]) * 60
+            elif raw.isdigit():
+                secs = int(raw) * 60  # assume minutes if bare number
+            if secs <= 0:
+                await ctx.send("❌ Invalid time. Examples: `time 5m`, `time 30m`, `time 1h`")
+                return
+            mode       = DUEL_MODE_TIME
+            mode_value = secs
+
+        elif args_lower.startswith("pokemon") or args_lower.startswith("poke"):
+            parts = args_lower.split()
+            raw   = parts[1] if len(parts) > 1 else ""
+            if not raw.isdigit() or int(raw) <= 0:
+                await ctx.send("❌ Invalid count. Examples: `pokemon 500`, `pokemon 1000`")
+                return
+            mode       = DUEL_MODE_POKEMON
+            mode_value = int(raw)
+
+        # Count burst channels as the "arena"
+        burst_channels = await catch_db.get_burst_channels(guild_id)
+        burst_count    = len(burst_channels)
+
+        # Create the duel record
+        duel_id = await catch_db.create_duel(
+            guild_id        = guild_id,
+            channel_id      = channel_id,
+            challenger_id   = str(ctx.author.id),
+            challenger_name = ctx.author.display_name,
+            opponent_id     = str(opponent.id),
+            opponent_name   = opponent.display_name,
+            mode            = mode,
+            mode_value      = mode_value,
+        )
+
+        embed = _duel_invite_embed(
+            challenger  = ctx.author,
+            opponent    = opponent,
+            mode        = mode,
+            mode_value  = mode_value,
+            burst_count = burst_count,
+            duel_id     = duel_id,
+            guild_id    = guild_id,
+        )
+        view = DuelInviteView(duel_id=duel_id, opponent_id=opponent.id, cog=self)
+        msg  = await ctx.send(content=opponent.mention, embed=embed, view=view)
+
+        # Wait for timeout then clean up message if not answered
+        await view.wait()
+        if view.result is None:
+            # Timed out
+            embed_to = discord.Embed(
+                description=f"⏰ Duel invite expired — {opponent.display_name} didn't respond.",
+                colour=0x99AAB5,
+            )
+            try:
+                await msg.edit(embed=embed_to, view=None)
+            except discord.NotFound:
+                pass
+
+    @commands.command(name="duelforfeit", aliases=["duelstop", "duelend"])
+    async def duelforfeit(self, ctx: commands.Context):
+        """Forfeit / end your current active duel."""
+        if not ctx.guild:
+            return
+        guild_id = str(ctx.guild.id)
+        duel     = await catch_db.get_active_duel_for_user(guild_id, str(ctx.author.id))
+        if not duel:
+            await ctx.send("❌ You're not in an active duel.")
+            return
+
+        ds = _active_duels.get(duel["id"])
+        if ds:
+            await self._end_duel(ds, reason="manual")
+        else:
+            # Edge case: state in DB but not in memory (bot restart)
+            ended_at  = _now_utc().strftime("%Y-%m-%d %H:%M:%S")
+            winner_id = ""
+            if duel["challenger_catches"] > duel["opponent_catches"]:
+                winner_id = duel["challenger_id"]
+            elif duel["opponent_catches"] > duel["challenger_catches"]:
+                winner_id = duel["opponent_id"]
+            await catch_db.end_duel(duel["id"], winner_id, ended_at)
+            await ctx.send("🏁 Duel ended.")
+
+    # ── Duel slash commands ───────────────────────────────────────────────────
+
+    _duel_group = app_commands.Group(name="duel", description="1v1 blitz catching duels", parent=_catches)
+
+    @_duel_group.command(name="h2h", description="Head-to-head duel record between two players")
+    @app_commands.describe(player1="First player", player2="Second player")
+    async def duel_h2h(
+        self,
+        interaction: discord.Interaction,
+        player1: discord.Member,
+        player2: discord.Member,
+    ):
+        await interaction.response.defer()
+        guild_id = str(interaction.guild_id)
+        h2h      = await catch_db.get_duel_head_to_head(guild_id, str(player1.id), str(player2.id))
+
+        if h2h["total"] == 0:
+            await interaction.followup.send(
+                embed=discord.Embed(
+                    description=f"No duels on record between **{player1.display_name}** and **{player2.display_name}**.",
+                    colour=0x99AAB5,
+                ).set_footer(text=make_footer(guild_id)),
+            )
+            return
+
+        embed = discord.Embed(
+            title="⚔️ Head-to-Head Record",
+            colour=0xFF6B35,
+        )
+        embed.set_thumbnail(url=player1.display_avatar.url)
+        embed.add_field(
+            name=f"🔴 {player1.display_name}",
+            value=f"**{h2h['a_wins']}** wins",
+            inline=True,
+        )
+        embed.add_field(name="vs", value=f"`{h2h['total']} duels`", inline=True)
+        embed.add_field(
+            name=f"🔵 {player2.display_name}",
+            value=f"**{h2h['b_wins']}** wins",
+            inline=True,
+        )
+        if h2h["draws"]:
+            embed.add_field(name="Draws", value=str(h2h["draws"]), inline=False)
+        embed.set_footer(text=make_footer(guild_id))
+        await interaction.followup.send(embed=embed)
+
+    @_duel_group.command(name="record", description="View your duel win/loss record")
+    @app_commands.describe(user="User to look up (defaults to yourself)")
+    async def duel_record(
+        self,
+        interaction: discord.Interaction,
+        user: Optional[discord.Member] = None,
+    ):
+        await interaction.response.defer()
+        guild_id = str(interaction.guild_id)
+        target   = user or interaction.user
+        rec      = await catch_db.get_duel_stats(guild_id, str(target.id))
+
+        embed = discord.Embed(
+            title=f"⚔️ Duel Record — {target.display_name}",
+            colour=0xFF6B35,
+        )
+        embed.set_thumbnail(url=target.display_avatar.url)
+        total = rec["total"]
+        if total == 0:
+            embed.description = "*No duels on record yet.*"
+        else:
+            win_rate = round(rec["wins"] / total * 100) if total > 0 else 0
+            embed.add_field(name="🏆 Wins",   value=str(rec["wins"]),   inline=True)
+            embed.add_field(name="💀 Losses", value=str(rec["losses"]), inline=True)
+            embed.add_field(name="🤝 Draws",  value=str(rec["draws"]),  inline=True)
+            embed.add_field(name="📊 Win Rate", value=f"{win_rate}%", inline=True)
+            embed.add_field(name="🎮 Total",   value=str(total),         inline=True)
+        embed.set_footer(text=make_footer(guild_id))
+        await interaction.followup.send(embed=embed)
 
 
 async def setup(bot: commands.Bot):

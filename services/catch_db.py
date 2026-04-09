@@ -99,6 +99,46 @@ CREATE TABLE IF NOT EXISTS burst_sessions (
     label        TEXT    NOT NULL DEFAULT ''
 );
 
+-- Duel system
+CREATE TABLE IF NOT EXISTS catch_duels (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    guild_id        TEXT    NOT NULL,
+    channel_id      TEXT    NOT NULL,         -- channel where duel was initiated
+    challenger_id   TEXT    NOT NULL,
+    challenger_name TEXT    NOT NULL DEFAULT '',
+    opponent_id     TEXT    NOT NULL,
+    opponent_name   TEXT    NOT NULL DEFAULT '',
+    mode            TEXT    NOT NULL DEFAULT 'free',  -- free|time|pokemon
+    mode_value      INTEGER NOT NULL DEFAULT 0,       -- 0=free, seconds for time, count for pokemon
+    state           TEXT    NOT NULL DEFAULT 'pending', -- pending|active|ended|declined|expired
+    winner_id       TEXT    NOT NULL DEFAULT '',
+    challenger_catches INTEGER NOT NULL DEFAULT 0,
+    opponent_catches   INTEGER NOT NULL DEFAULT 0,
+    started_at      TEXT,
+    ended_at        TEXT,
+    created_at      TEXT    NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE TABLE IF NOT EXISTS catch_duel_events (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    duel_id     INTEGER NOT NULL REFERENCES catch_duels(id) ON DELETE CASCADE,
+    user_id     TEXT    NOT NULL,
+    pokemon_name TEXT   NOT NULL DEFAULT '',
+    reaction_ms  INTEGER NOT NULL DEFAULT 0,
+    caught_at    TEXT   NOT NULL DEFAULT (datetime('now'))
+);
+
+-- Accuracy tracking (failed catches)
+CREATE TABLE IF NOT EXISTS catch_failed (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    guild_id      TEXT    NOT NULL,
+    channel_id    TEXT    NOT NULL,
+    user_id       TEXT    NOT NULL,
+    user_name     TEXT    NOT NULL DEFAULT '',
+    pokemon_name  TEXT    NOT NULL DEFAULT '',
+    failed_at     TEXT    NOT NULL DEFAULT (datetime('now'))
+);
+
 -- Indexes
 CREATE INDEX IF NOT EXISTS idx_ce_session    ON catch_events (session_id);
 CREATE INDEX IF NOT EXISTS idx_ce_guild_user ON catch_events (guild_id, user_id, caught_at);
@@ -107,6 +147,8 @@ CREATE INDEX IF NOT EXISTS idx_cs_guild_ch   ON catch_sessions (guild_id, channe
 CREATE INDEX IF NOT EXISTS idx_cud_guild     ON catch_user_daily (guild_id, user_id, day);
 CREATE INDEX IF NOT EXISTS idx_bs_guild      ON burst_sessions (guild_id, state);
 CREATE INDEX IF NOT EXISTS idx_bc_guild      ON burst_channels (guild_id);
+CREATE INDEX IF NOT EXISTS idx_cd_guild      ON catch_duels (guild_id, state);
+CREATE INDEX IF NOT EXISTS idx_cf_guild_user ON catch_failed (guild_id, user_id, failed_at);
 """
 
 _MIGRATIONS = [
@@ -853,3 +895,239 @@ async def get_burst_session_stats(burst_session_id: int, guild_id: str) -> dict:
             "caught_at": fastest_row[3],
         } if fastest_row else None,
     }
+
+
+# ── Accuracy / failed catches ─────────────────────────────────────────────────
+
+async def record_failed_catch(
+    guild_id: str,
+    channel_id: str,
+    user_id: str,
+    user_name: str,
+    pokemon_name: str,
+) -> None:
+    async with _write_lock:
+        async with aiosqlite.connect(DB_PATH) as db:
+            await db.execute(
+                """INSERT INTO catch_failed
+                   (guild_id, channel_id, user_id, user_name, pokemon_name)
+                   VALUES (?, ?, ?, ?, ?)""",
+                (guild_id, channel_id, user_id, user_name, pokemon_name),
+            )
+            await db.commit()
+
+
+async def get_user_accuracy(guild_id: str, user_id: str, period: str = "all") -> dict:
+    """Return {success, failed, accuracy_pct} for a user."""
+    if period == "today":
+        day_filt_s = "AND caught_at >= date('now')"
+        day_filt_f = "AND failed_at >= date('now')"
+    elif period == "week":
+        day_filt_s = "AND caught_at >= date('now', '-6 days')"
+        day_filt_f = "AND failed_at >= date('now', '-6 days')"
+    elif period == "month":
+        day_filt_s = "AND caught_at >= date('now', 'start of month')"
+        day_filt_f = "AND failed_at >= date('now', 'start of month')"
+    else:
+        day_filt_s = day_filt_f = ""
+
+    async with aiosqlite.connect(DB_PATH) as db:
+        async with db.execute(
+            f"SELECT COUNT(*) FROM catch_events WHERE guild_id=? AND user_id=? {day_filt_s}",
+            (guild_id, user_id),
+        ) as cur:
+            success = (await cur.fetchone())[0] or 0
+        async with db.execute(
+            f"SELECT COUNT(*) FROM catch_failed WHERE guild_id=? AND user_id=? {day_filt_f}",
+            (guild_id, user_id),
+        ) as cur:
+            failed = (await cur.fetchone())[0] or 0
+
+    total = success + failed
+    pct = round(success / total * 100, 1) if total > 0 else 0.0
+    return {"success": success, "failed": failed, "total_attempts": total, "accuracy_pct": pct}
+
+
+# ── Duels ─────────────────────────────────────────────────────────────────────
+
+async def create_duel(
+    guild_id: str,
+    channel_id: str,
+    challenger_id: str,
+    challenger_name: str,
+    opponent_id: str,
+    opponent_name: str,
+    mode: str,
+    mode_value: int,
+) -> int:
+    """Create a pending duel. Returns duel ID."""
+    async with _write_lock:
+        async with aiosqlite.connect(DB_PATH) as db:
+            cur = await db.execute(
+                """INSERT INTO catch_duels
+                   (guild_id, channel_id, challenger_id, challenger_name,
+                    opponent_id, opponent_name, mode, mode_value, state)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending')""",
+                (guild_id, channel_id, challenger_id, challenger_name,
+                 opponent_id, opponent_name, mode, mode_value),
+            )
+            await db.commit()
+            return cur.lastrowid
+
+
+async def get_duel(duel_id: int) -> Optional[dict]:
+    async with aiosqlite.connect(DB_PATH) as db:
+        async with db.execute(
+            """SELECT id, guild_id, channel_id, challenger_id, challenger_name,
+                      opponent_id, opponent_name, mode, mode_value, state,
+                      winner_id, challenger_catches, opponent_catches,
+                      started_at, ended_at, created_at
+               FROM catch_duels WHERE id=?""",
+            (duel_id,),
+        ) as cur:
+            row = await cur.fetchone()
+    if not row:
+        return None
+    keys = ["id","guild_id","channel_id","challenger_id","challenger_name",
+            "opponent_id","opponent_name","mode","mode_value","state",
+            "winner_id","challenger_catches","opponent_catches",
+            "started_at","ended_at","created_at"]
+    return dict(zip(keys, row))
+
+
+async def accept_duel(duel_id: int, started_at: str) -> bool:
+    async with _write_lock:
+        async with aiosqlite.connect(DB_PATH) as db:
+            cur = await db.execute(
+                "UPDATE catch_duels SET state='active', started_at=? WHERE id=? AND state='pending'",
+                (started_at, duel_id),
+            )
+            await db.commit()
+            return cur.rowcount > 0
+
+
+async def decline_duel(duel_id: int) -> bool:
+    async with _write_lock:
+        async with aiosqlite.connect(DB_PATH) as db:
+            cur = await db.execute(
+                "UPDATE catch_duels SET state='declined' WHERE id=? AND state='pending'",
+                (duel_id,),
+            )
+            await db.commit()
+            return cur.rowcount > 0
+
+
+async def expire_duel(duel_id: int) -> bool:
+    async with _write_lock:
+        async with aiosqlite.connect(DB_PATH) as db:
+            cur = await db.execute(
+                "UPDATE catch_duels SET state='expired' WHERE id=? AND state='pending'",
+                (duel_id,),
+            )
+            await db.commit()
+            return cur.rowcount > 0
+
+
+async def record_duel_catch(
+    duel_id: int,
+    user_id: str,
+    pokemon_name: str,
+    reaction_ms: int,
+    caught_at: str,
+    is_challenger: bool,
+) -> int:
+    """Record a catch in a duel. Returns new catch count for that user."""
+    col = "challenger_catches" if is_challenger else "opponent_catches"
+    async with _write_lock:
+        async with aiosqlite.connect(DB_PATH) as db:
+            await db.execute(
+                f"UPDATE catch_duels SET {col} = {col} + 1 WHERE id=?",
+                (duel_id,),
+            )
+            await db.execute(
+                """INSERT INTO catch_duel_events (duel_id, user_id, pokemon_name, reaction_ms, caught_at)
+                   VALUES (?, ?, ?, ?, ?)""",
+                (duel_id, user_id, pokemon_name, reaction_ms, caught_at),
+            )
+            await db.commit()
+            async with db.execute(
+                f"SELECT {col} FROM catch_duels WHERE id=?", (duel_id,)
+            ) as cur:
+                row = await cur.fetchone()
+            return row[0] if row else 0
+
+
+async def end_duel(duel_id: int, winner_id: str, ended_at: str) -> bool:
+    async with _write_lock:
+        async with aiosqlite.connect(DB_PATH) as db:
+            cur = await db.execute(
+                """UPDATE catch_duels SET state='ended', winner_id=?, ended_at=?
+                   WHERE id=? AND state='active'""",
+                (winner_id, ended_at, duel_id),
+            )
+            await db.commit()
+            return cur.rowcount > 0
+
+
+async def get_duel_head_to_head(guild_id: str, user_a: str, user_b: str) -> dict:
+    """Get win/loss record between two users."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        async with db.execute(
+            """SELECT winner_id FROM catch_duels
+               WHERE guild_id=? AND state='ended'
+                 AND ((challenger_id=? AND opponent_id=?)
+                   OR (challenger_id=? AND opponent_id=?))""",
+            (guild_id, user_a, user_b, user_b, user_a),
+        ) as cur:
+            rows = await cur.fetchall()
+
+    a_wins = b_wins = draws = 0
+    for row in rows:
+        winner = row[0]
+        if winner == user_a:
+            a_wins += 1
+        elif winner == user_b:
+            b_wins += 1
+        else:
+            draws += 1
+
+    return {"a_wins": a_wins, "b_wins": b_wins, "draws": draws, "total": len(rows)}
+
+
+async def get_duel_stats(guild_id: str, user_id: str) -> dict:
+    """Overall duel record for a user."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        async with db.execute(
+            """SELECT
+                 SUM(CASE WHEN winner_id=? THEN 1 ELSE 0 END),
+                 SUM(CASE WHEN winner_id != ? AND winner_id != '' THEN 1 ELSE 0 END),
+                 SUM(CASE WHEN winner_id='' THEN 1 ELSE 0 END),
+                 COUNT(*)
+               FROM catch_duels
+               WHERE guild_id=? AND state='ended'
+                 AND (challenger_id=? OR opponent_id=?)""",
+            (user_id, user_id, guild_id, user_id, user_id),
+        ) as cur:
+            row = await cur.fetchone()
+
+    wins   = row[0] or 0
+    losses = row[1] or 0
+    draws  = row[2] or 0
+    total  = row[3] or 0
+    return {"wins": wins, "losses": losses, "draws": draws, "total": total}
+
+
+async def get_active_duel_for_user(guild_id: str, user_id: str) -> Optional[dict]:
+    """Return the active duel where user is challenger or opponent, or None."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        async with db.execute(
+            """SELECT id FROM catch_duels
+               WHERE guild_id=? AND state='active'
+                 AND (challenger_id=? OR opponent_id=?)
+               LIMIT 1""",
+            (guild_id, user_id, user_id),
+        ) as cur:
+            row = await cur.fetchone()
+    if not row:
+        return None
+    return await get_duel(row[0])
