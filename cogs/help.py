@@ -378,7 +378,8 @@ def _section_icc(gid: str) -> tuple[str, str, discord.Embed]:
             "`/icc start [label]`  — Create a draft org (invisible until published)\n"
             "`/icc publish`  — Go live: post announcement, open claims, start timers\n"
             "`/icc status [org_id]`  — Full dashboard: owners, progress, status\n"
-            "`/icc cancel [reason]`  — Cancel active or draft org"
+            "`/icc cancel [reason]`  — Cancel active or draft org\n"
+            "`/icc history [limit]`  — View past completed/cancelled orgs"
         ),
         inline=False,
     )
@@ -389,6 +390,18 @@ def _section_icc(gid: str) -> tuple[str, str, discord.Embed]:
             "`/icc unclaim <category>`  — Release your claim (before any progress)\n"
             "`/icc progress [category]`  — Progress bars + missing channels\n"
             "`/icc mark_bought <channel>`  — Manually mark a channel as bought"
+        ),
+        inline=False,
+    )
+    embed.add_field(
+        name="Reserves  *(buyers)*",
+        value=(
+            "`/icc reserve pick <pokemon>`  — Reserve a Pokémon for your category slot (FCFS across whole org)\n"
+            "   ↳ Autocomplete shows eligible Pokémon from normal + event lists\n"
+            "   ↳ Reserving e.g. *Vivillon* covers **all** Vivillon forms automatically\n"
+            "   ↳ Reserves **lock** when the org is published — no new picks after that\n"
+            "`/icc reserve release <pokemon>`  — Free your reserve (no ping, no steal detection)\n"
+            "`/icc reserve list [user]`  — See your current reserves (admins can check any user)"
         ),
         inline=False,
     )
@@ -411,7 +424,9 @@ def _section_icc(gid: str) -> tuple[str, str, discord.Embed]:
             "`/icc setup admin_role <role>`  — Set ICC admin role\n"
             "`/icc setup organizer_role <role>`  — Set org creator role\n"
             "`/icc setup helper_role <category> <role>`  — Set escalation role per category\n"
-            "`/icc category create/edit/delete/list/view`  — Manage categories\n"
+            "`/icc category create <name> <count> [coins]`  — Create a category\n"
+            "`/icc category edit <category> [count] [coins] [reserve_slots]`  — Edit a category\n"
+            "`/icc category delete/list/view`  — Manage categories\n"
             "`/icc category add_channels / remove_channels`  — Map channels to categories"
         ),
         inline=False,
@@ -419,8 +434,10 @@ def _section_icc(gid: str) -> tuple[str, str, discord.Embed]:
     embed.add_field(
         name="Auto-behaviour",
         value=(
-            "When Operation Dex posts **🧪 Incense Activated!** in a mapped channel,\n"
-            "the channel is automatically marked bought in the active org.\n"
+            "When Op Dex posts **🧪 Incense Activated!** in a mapped channel, the channel is marked bought.\n"
+            "When Op Dex posts **A wild X appeared!**, the bot replies with a reserve ping if matched.\n"
+            "Unknown spawns (not in any Pokémon list) are flagged to the bot owner by DM.\n"
+            "Steal alerts are posted to the admin channel if a reserved Pokémon is caught by someone else.\n"
             "Unclaimed categories escalate to the helper role after **5 min**.\n"
             "Buyers receive reminders every **5 min** until their category is complete."
         ),
@@ -428,6 +445,52 @@ def _section_icc(gid: str) -> tuple[str, str, discord.Embed]:
     )
     embed.set_footer(text=make_footer(gid, "ICC"))
     return ("🧪", "Incense Control Center", embed)
+
+
+def _section_pokemon_lists(gid: str) -> tuple[str, str, discord.Embed]:
+    embed = discord.Embed(
+        title="📋  Pokémon Lists  *(admin only)*",
+        description=(
+            "Manage the master Pokémon lists used by ICC for reserve eligibility and spawn matching.\n"
+            "Categories: **rare · gmax · eevo · regional** (anything else = **normal**).\n"
+            "Adding a Pokémon auto-fetches **all its forms** from PokéAPI."
+        ),
+        colour=0xFEE75C,
+    )
+    embed.add_field(
+        name="Category lists",
+        value=(
+            "`/pokemon_list add <category> <name>`  — Add a Pokémon + all its forms to a list\n"
+            "   ↳ e.g. `/pokemon_list add rare Mewtwo` fetches Mega Mewtwo X/Y automatically\n"
+            "`/pokemon_list remove <name>`  — Remove a Pokémon and all its forms from all lists\n"
+            "`/pokemon_list view <category>`  — View all Pokémon in a category list"
+        ),
+        inline=False,
+    )
+    embed.add_field(
+        name="Events  — custom spawn strings with no form grouping",
+        value=(
+            "`/pokemon_list event create <name>`  — Create a named event (e.g. *Valentine's 2025*)\n"
+            "`/pokemon_list event delete <name>`  — Delete an event and all its entries\n"
+            "`/pokemon_list event add <event> <pokemon>`  — Add a custom string (e.g. *Valentine Pikachu*)\n"
+            "`/pokemon_list event remove <event> <pokemon>`  — Remove a Pokémon from an event\n"
+            "`/pokemon_list event view <event>`  — View all Pokémon in an event\n"
+            "`/pokemon_list event list`  — List all events with status and count"
+        ),
+        inline=False,
+    )
+    embed.add_field(
+        name="How lists affect ICC",
+        value=(
+            "• **rare / gmax / eevo / regional** → not reservable; tracked for spawn identification\n"
+            "• **normal** → eligible for `/icc reserve pick` (anything not in the above 4)\n"
+            "• **event** Pokémon → also reservable; matched by exact name (no form grouping)\n"
+            "• Spawn names not found in **any** list → bot owner is DMed to flag it"
+        ),
+        inline=False,
+    )
+    embed.set_footer(text=make_footer(gid, "Pokémon Lists"))
+    return ("📋", "Pokémon Lists", embed)
 
 
 def _section_changelog(gid: str) -> tuple[str, str, discord.Embed]:
@@ -570,6 +633,7 @@ class HelpCog(commands.Cog):
             sections.append(_section_incense(gid, is_admin=admin))
         if admin:
             sections.append(_section_icc(gid))
+            sections.append(_section_pokemon_lists(gid))
         sections.append(_section_changelog(gid))
         sections.append(_section_tips(gid))
 
