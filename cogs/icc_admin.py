@@ -36,6 +36,12 @@ from services.icc_reserve_service import (
 )
 from services import pokemon_list_db
 from utils.icc_checks import is_icc_admin, is_icc_organizer
+from utils.icc_embeds import build_draft_embed, build_published_embed
+from utils.icc_views import (
+    DraftControlPanel,
+    PublishedOrgPanel,
+    reattach_persistent_views,
+)
 
 log = logging.getLogger("qtsdex.icc_admin")
 
@@ -123,6 +129,9 @@ class ICCAdmin(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
 
+    async def cog_load(self):
+        await reattach_persistent_views(self.bot)
+
     # ── Group tree ───────────────────────────────────────────────────────────
 
     icc = app_commands.Group(name="org", description="Incense Control Center")
@@ -143,11 +152,9 @@ class ICCAdmin(commands.Cog):
         if not ok:
             return await interaction.response.send_message(msg, ephemeral=True)
         org = await icc_db.get_org(org_id)
-        embed = await build_org_embed(org, guild_id)
-        await interaction.response.send_message(
-            "Draft org created. Use `/icc publish` when ready to go live.",
-            embed=embed, ephemeral=True,
-        )
+        embed = await build_draft_embed(org, guild_id)
+        view = DraftControlPanel(org, guild_id)
+        await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
 
     @icc.command(name="publish", description="Publish draft org — go live")
     async def icc_publish(self, interaction: Interaction):
@@ -160,17 +167,24 @@ class ICCAdmin(commands.Cog):
 
         await interaction.response.defer(ephemeral=True)
 
-        embed = await build_org_embed(draft, guild_id)
-        embed.colour = 0x57F287
-        announcement = await interaction.channel.send(embed=embed)
+        # Send a placeholder message so we get a message ID for the org record
+        placeholder = await interaction.channel.send("Publishing org…")
 
         ok, result_msg, org = await publish_org(
             guild_id, str(interaction.user.id),
-            str(interaction.channel_id), str(announcement.id),
+            str(interaction.channel_id), str(placeholder.id),
         )
         if not ok:
+            await placeholder.delete()
             await interaction.followup.send(result_msg, ephemeral=True)
             return
+
+        # Build the public panel and edit it onto the placeholder
+        org_cats = await icc_db.get_org_categories(org["id"])
+        embed = await build_published_embed(org, guild_id)
+        view = PublishedOrgPanel(org, org_cats, guild_id)
+        await placeholder.edit(content=None, embed=embed, view=view)
+
         await interaction.followup.send("Org published! Claims are now open.", ephemeral=True)
 
     @icc.command(name="status", description="Show org dashboard")
@@ -187,8 +201,20 @@ class ICCAdmin(commands.Cog):
                 org = await icc_db.get_draft_org(guild_id)
             if not org:
                 return await interaction.response.send_message("No active or draft org.", ephemeral=True)
-        embed = await build_org_embed(org, guild_id)
-        await interaction.response.send_message(embed=embed, ephemeral=True)
+
+        if org["status"] == "draft":
+            embed = await build_draft_embed(org, guild_id)
+            view = DraftControlPanel(org, guild_id)
+            await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
+        elif org["status"] == "published":
+            org_cats = await icc_db.get_org_categories(org["id"])
+            embed = await build_published_embed(org, guild_id)
+            view = PublishedOrgPanel(org, org_cats, guild_id)
+            await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
+        else:
+            # complete/cancelled — read-only, use the old embed
+            embed = await build_org_embed(org, guild_id)
+            await interaction.response.send_message(embed=embed, ephemeral=True)
 
     @icc.command(name="cancel", description="Cancel the active or draft org")
     @app_commands.describe(reason="Optional reason")

@@ -24,6 +24,7 @@ from services import icc_db, guild_settings_db, pokemon_list_db
 from services.icc_progress_service import mark_channel_done
 from services.icc_reserve_service import match_spawn_to_reserve
 from services.icc_scheduler import start_scheduler, stop_scheduler
+from utils.icc_views import refresh_panel_by_org
 
 log = logging.getLogger("qtsdex.icc_listener")
 
@@ -119,6 +120,14 @@ class ICCListener(commands.Cog):
         )
         if ok:
             log.info(f"ICC auto-detect: {msg}")
+
+            # Refresh the published panel embed so progress is visible
+            try:
+                updated_org = await icc_db.get_org(org["id"])
+                if updated_org and updated_org["status"] in ("published", "complete"):
+                    await refresh_panel_by_org(self.bot, updated_org, guild_id)
+            except Exception:
+                log.debug("Panel refresh failed after auto-detect", exc_info=True)
 
             # Notify in announcement channel if category just completed
             if refreshed and refreshed["status"] == "complete":
