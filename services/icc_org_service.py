@@ -6,7 +6,7 @@ Business logic for org lifecycle: create (draft), publish, cancel, complete.
 import logging
 from datetime import datetime, timezone
 
-from services import icc_db, icc_scheduler
+from services import icc_db, icc_scheduler, icc_reserve_service
 
 log = logging.getLogger("qtsdex.icc_org_service")
 
@@ -59,6 +59,9 @@ async def publish_org(
         announcement_channel_id=announcement_channel_id,
         announcement_message_id=announcement_message_id,
     )
+
+    # Lock all declared reserves
+    await icc_reserve_service.lock_org_reserves(org["id"], guild_id)
 
     # Schedule helper escalation for every unclaimed category
     org_cats = await icc_db.get_org_categories(org["id"])

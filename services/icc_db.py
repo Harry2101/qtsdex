@@ -6,7 +6,6 @@ Isolated database file: data/icc.db
 Tables:
   icc_categories         — category definitions (Rare, Gmax, etc.) per guild
   icc_category_channels  — maps each category to fixed Discord channel IDs
-  icc_reserves           — explicit reserve assignments per org
   icc_orgs               — one row per org event
   icc_org_categories     — join: which categories are active in an org + progress
   icc_channel_completions— ground-truth per-channel completion records
@@ -43,9 +42,9 @@ async def init_db():
                 required_count  INTEGER NOT NULL,
                 coin_value      INTEGER NOT NULL DEFAULT 0,
                 helper_role_id  TEXT    NOT NULL DEFAULT '',
-                is_reserve      INTEGER NOT NULL DEFAULT 0,
                 display_order   INTEGER NOT NULL DEFAULT 0,
                 active          INTEGER NOT NULL DEFAULT 1,
+                reserve_slots   INTEGER NOT NULL DEFAULT 0,
                 created_at      TEXT    NOT NULL DEFAULT (datetime('now')),
                 UNIQUE (guild_id, name)
             );
@@ -83,20 +82,6 @@ async def init_db():
 
             CREATE INDEX IF NOT EXISTS idx_icc_orgs_guild_status
                 ON icc_orgs (guild_id, status);
-
-            CREATE TABLE IF NOT EXISTS icc_reserves (
-                id                    INTEGER PRIMARY KEY AUTOINCREMENT,
-                guild_id              TEXT    NOT NULL,
-                org_id                INTEGER NOT NULL REFERENCES icc_orgs(id) ON DELETE CASCADE,
-                reserve_category_id   INTEGER NOT NULL REFERENCES icc_categories(id),
-                assigned_to           TEXT    NOT NULL DEFAULT '',
-                notes                 TEXT    NOT NULL DEFAULT '',
-                status                TEXT    NOT NULL DEFAULT 'held',
-                created_at            TEXT    NOT NULL DEFAULT (datetime('now'))
-            );
-
-            CREATE INDEX IF NOT EXISTS idx_icc_reserves_org
-                ON icc_reserves (org_id);
 
             CREATE TABLE IF NOT EXISTS icc_org_categories (
                 id              INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -165,7 +150,32 @@ async def init_db():
 
             CREATE INDEX IF NOT EXISTS idx_icc_audit_guild
                 ON icc_audit_log (guild_id, created_at DESC);
+
+            CREATE TABLE IF NOT EXISTS icc_org_reserves (
+                id              INTEGER PRIMARY KEY AUTOINCREMENT,
+                org_id          INTEGER NOT NULL REFERENCES icc_orgs(id) ON DELETE CASCADE,
+                org_category_id INTEGER NOT NULL REFERENCES icc_org_categories(id) ON DELETE CASCADE,
+                owner_id        TEXT    NOT NULL,
+                pokemon_name    TEXT    NOT NULL,
+                base_name       TEXT    NOT NULL,
+                locked          INTEGER NOT NULL DEFAULT 0,
+                released        INTEGER NOT NULL DEFAULT 0,
+                created_at      TEXT    NOT NULL DEFAULT (datetime('now')),
+                UNIQUE (org_id, base_name)
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_icc_reserves_org
+                ON icc_org_reserves (org_id, released);
+            CREATE INDEX IF NOT EXISTS idx_icc_reserves_owner
+                ON icc_org_reserves (org_id, owner_id);
         """)
+
+        # Migration: add reserve_slots to existing icc_categories tables
+        try:
+            await db.execute("ALTER TABLE icc_categories ADD COLUMN reserve_slots INTEGER NOT NULL DEFAULT 0")
+        except Exception:
+            pass  # column already exists
+
         await db.commit()
     log.info("ICC database initialised")
 
@@ -174,7 +184,7 @@ async def init_db():
 
 async def create_category(
     guild_id: str, name: str, required_count: int, coin_value: int,
-    is_reserve: bool = False, display_order: int = 0,
+    display_order: int = 0,
 ) -> Optional[int]:
     """Create a category. Returns its ID, or None on duplicate."""
     async with _write_lock:
@@ -182,9 +192,9 @@ async def create_category(
             try:
                 cur = await db.execute(
                     """INSERT INTO icc_categories
-                       (guild_id, name, required_count, coin_value, is_reserve, display_order)
-                       VALUES (?, ?, ?, ?, ?, ?)""",
-                    (guild_id, name, required_count, coin_value, 1 if is_reserve else 0, display_order),
+                       (guild_id, name, required_count, coin_value, display_order)
+                       VALUES (?, ?, ?, ?, ?)""",
+                    (guild_id, name, required_count, coin_value, display_order),
                 )
                 await db.commit()
                 return cur.lastrowid
@@ -195,8 +205,8 @@ async def create_category(
 async def update_category(
     category_id: int, *, required_count: Optional[int] = None,
     coin_value: Optional[int] = None, helper_role_id: Optional[str] = None,
-    is_reserve: Optional[bool] = None, active: Optional[bool] = None,
-    display_order: Optional[int] = None,
+    active: Optional[bool] = None, display_order: Optional[int] = None,
+    reserve_slots: Optional[int] = None,
 ) -> bool:
     """Update category fields. Returns True if row found."""
     sets = []
@@ -207,12 +217,12 @@ async def update_category(
         sets.append("coin_value=?"); params.append(coin_value)
     if helper_role_id is not None:
         sets.append("helper_role_id=?"); params.append(helper_role_id)
-    if is_reserve is not None:
-        sets.append("is_reserve=?"); params.append(1 if is_reserve else 0)
     if active is not None:
         sets.append("active=?"); params.append(1 if active else 0)
     if display_order is not None:
         sets.append("display_order=?"); params.append(display_order)
+    if reserve_slots is not None:
+        sets.append("reserve_slots=?"); params.append(reserve_slots)
     if not sets:
         return False
     params.append(category_id)
@@ -413,46 +423,111 @@ async def get_org_any_active(guild_id: str) -> Optional[dict]:
 # ── Reserves ─────────────────────────────────────────────────────────────────
 
 async def create_reserve(
-    guild_id: str, org_id: int, reserve_category_id: int,
-    assigned_to: str = "", notes: str = "",
-) -> int:
+    org_id: int, org_category_id: int, owner_id: str,
+    pokemon_name: str, base_name: str,
+) -> Optional[int]:
+    """Create a reserve pick. Returns ID, or None if base_name already reserved in this org."""
+    async with _write_lock:
+        async with aiosqlite.connect(DB_PATH) as db:
+            try:
+                cur = await db.execute(
+                    """INSERT INTO icc_org_reserves
+                       (org_id, org_category_id, owner_id, pokemon_name, base_name)
+                       VALUES (?, ?, ?, ?, ?)""",
+                    (org_id, org_category_id, owner_id, pokemon_name, base_name),
+                )
+                await db.commit()
+                return cur.lastrowid
+            except aiosqlite.IntegrityError:
+                return None
+
+
+async def get_reserves_for_org(org_id: int, active_only: bool = True) -> list[dict]:
+    """Get all reserves for an org. active_only=True excludes released."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        where = "org_id=? AND released=0" if active_only else "org_id=?"
+        async with db.execute(
+            f"SELECT * FROM icc_org_reserves WHERE {where} ORDER BY created_at",
+            (org_id,),
+        ) as cur:
+            return [dict(r) for r in await cur.fetchall()]
+
+
+async def get_reserves_for_owner(org_id: int, owner_id: str) -> list[dict]:
+    """Get active reserves for a specific owner in an org."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        async with db.execute(
+            "SELECT * FROM icc_org_reserves WHERE org_id=? AND owner_id=? AND released=0",
+            (org_id, owner_id),
+        ) as cur:
+            return [dict(r) for r in await cur.fetchall()]
+
+
+async def get_reserves_for_org_category(org_category_id: int) -> list[dict]:
+    """Get active reserves for a specific org_category."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        async with db.execute(
+            "SELECT * FROM icc_org_reserves WHERE org_category_id=? AND released=0",
+            (org_category_id,),
+        ) as cur:
+            return [dict(r) for r in await cur.fetchall()]
+
+
+async def release_reserve(reserve_id: int) -> bool:
+    """Mark a reserve as released."""
     async with _write_lock:
         async with aiosqlite.connect(DB_PATH) as db:
             cur = await db.execute(
-                """INSERT INTO icc_reserves
-                   (guild_id, org_id, reserve_category_id, assigned_to, notes)
-                   VALUES (?, ?, ?, ?, ?)""",
-                (guild_id, org_id, reserve_category_id, assigned_to, notes),
-            )
-            await db.commit()
-            return cur.lastrowid
-
-
-async def update_reserve(reserve_id: int, **fields) -> bool:
-    if not fields:
-        return False
-    sets = []
-    params = []
-    for k, v in fields.items():
-        sets.append(f"{k}=?")
-        params.append(v)
-    params.append(reserve_id)
-    async with _write_lock:
-        async with aiosqlite.connect(DB_PATH) as db:
-            cur = await db.execute(
-                f"UPDATE icc_reserves SET {', '.join(sets)} WHERE id=?", params,
+                "UPDATE icc_org_reserves SET released=1 WHERE id=? AND released=0",
+                (reserve_id,),
             )
             await db.commit()
             return cur.rowcount > 0
 
 
-async def get_reserves(org_id: int) -> list[dict]:
+async def lock_reserves_for_org(org_id: int) -> int:
+    """Lock all active reserves when an org is published. Returns count locked."""
+    async with _write_lock:
+        async with aiosqlite.connect(DB_PATH) as db:
+            cur = await db.execute(
+                "UPDATE icc_org_reserves SET locked=1 WHERE org_id=? AND released=0",
+                (org_id,),
+            )
+            await db.commit()
+            return cur.rowcount
+
+
+async def find_reserve_by_spawn(org_id: int, spawn_name: str) -> Optional[dict]:
+    """Find an active, locked reserve matching a spawn name (by base_name or pokemon_name)."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        # Check against base_name and pokemon_name (exact match, case-insensitive)
+        async with db.execute(
+            """SELECT * FROM icc_org_reserves
+               WHERE org_id=? AND locked=1 AND released=0
+                 AND (LOWER(pokemon_name)=LOWER(?) OR LOWER(base_name)=LOWER(?))""",
+            (org_id, spawn_name, spawn_name),
+        ) as cur:
+            row = await cur.fetchone()
+            return dict(row) if row else None
+
+
+async def get_reserve_by_owner_and_name(
+    org_id: int, owner_id: str, base_name: str,
+) -> Optional[dict]:
+    """Get a specific reserve by owner and base_name."""
     async with aiosqlite.connect(DB_PATH) as db:
         db.row_factory = aiosqlite.Row
         async with db.execute(
-            "SELECT * FROM icc_reserves WHERE org_id=? ORDER BY id", (org_id,),
+            """SELECT * FROM icc_org_reserves
+               WHERE org_id=? AND owner_id=? AND LOWER(base_name)=LOWER(?) AND released=0""",
+            (org_id, owner_id, base_name),
         ) as cur:
-            return [dict(r) for r in await cur.fetchall()]
+            row = await cur.fetchone()
+            return dict(row) if row else None
 
 
 # ── Org categories ───────────────────────────────────────────────────────────
@@ -474,14 +549,15 @@ async def get_org_categories(org_id: int) -> list[dict]:
         db.row_factory = aiosqlite.Row
         async with db.execute(
             """SELECT oc.*, c.name, c.required_count, c.coin_value,
-                      c.helper_role_id, c.is_reserve
+                      c.helper_role_id
                FROM icc_org_categories oc
                JOIN icc_categories c ON c.id = oc.category_id
+               WHERE oc.org_id = ?
                ORDER BY c.display_order, c.name""",
-            (),
+            (org_id,),
         ) as cur:
             rows = await cur.fetchall()
-            return [dict(r) for r in rows if r["org_id"] == org_id]
+            return [dict(r) for r in rows]
 
 
 async def get_org_category(org_category_id: int) -> Optional[dict]:
@@ -489,7 +565,7 @@ async def get_org_category(org_category_id: int) -> Optional[dict]:
         db.row_factory = aiosqlite.Row
         async with db.execute(
             """SELECT oc.*, c.name, c.required_count, c.coin_value,
-                      c.helper_role_id, c.is_reserve
+                      c.helper_role_id
                FROM icc_org_categories oc
                JOIN icc_categories c ON c.id = oc.category_id
                WHERE oc.id=?""",
@@ -504,7 +580,7 @@ async def get_org_category_by_name(org_id: int, category_name: str) -> Optional[
         db.row_factory = aiosqlite.Row
         async with db.execute(
             """SELECT oc.*, c.name, c.required_count, c.coin_value,
-                      c.helper_role_id, c.is_reserve
+                      c.helper_role_id
                FROM icc_org_categories oc
                JOIN icc_categories c ON c.id = oc.category_id
                WHERE oc.org_id=? AND c.name=? COLLATE NOCASE""",
@@ -580,7 +656,7 @@ async def resolve_channel_to_org_category(
         db.row_factory = aiosqlite.Row
         async with db.execute(
             """SELECT oc.*, c.name, c.required_count, c.coin_value,
-                      c.helper_role_id, c.is_reserve
+                      c.helper_role_id
                FROM icc_category_channels cc
                JOIN icc_org_categories oc ON oc.category_id = cc.category_id AND oc.org_id = ?
                JOIN icc_categories c ON c.id = oc.category_id

@@ -31,6 +31,10 @@ from services.icc_claim_service import (
 from services.icc_progress_service import (
     admin_force_complete, admin_reset_category, mark_channel_done,
 )
+from services.icc_reserve_service import (
+    pick_reserve, release_reserve, get_user_reserves,
+)
+from services import pokemon_list_db
 from utils.icc_checks import is_icc_admin, is_icc_organizer
 
 log = logging.getLogger("qtsdex.icc_admin")
@@ -69,9 +73,8 @@ async def build_org_embed(org: dict, guild_id: str) -> discord.Embed:
         bar = _progress_bar(oc["channels_done"], oc["required_count"])
         done = oc["channels_done"]
         req = oc["required_count"]
-        reserve = " (R)" if oc["is_reserve"] else ""
         lines.append(
-            f"{emoji} **{oc['name']}**{reserve} — {owner}\n"
+            f"{emoji} **{oc['name']}** — {owner}\n"
             f"  {bar} {done}/{req} ch  •  {oc['coin_value']:,} coins"
         )
         total_coins += oc["coin_value"]
@@ -126,6 +129,7 @@ class ICCAdmin(commands.Cog):
     setup_group = app_commands.Group(name="setup", description="ICC setup", parent=icc)
     cat_group = app_commands.Group(name="category", description="Manage categories", parent=icc)
     adm_group = app_commands.Group(name="admin", description="Admin overrides", parent=icc)
+    reserve_group = app_commands.Group(name="reserve", description="Reserve Pokemon picks", parent=icc)
 
     # ━━ /icc start / publish / status / cancel ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
@@ -141,7 +145,7 @@ class ICCAdmin(commands.Cog):
         org = await icc_db.get_org(org_id)
         embed = await build_org_embed(org, guild_id)
         await interaction.response.send_message(
-            "Draft org created. Configure reserves, then `/icc publish` when ready.",
+            "Draft org created. Use `/icc publish` when ready to go live.",
             embed=embed, ephemeral=True,
         )
 
@@ -241,12 +245,12 @@ class ICCAdmin(commands.Cog):
         lines = []
         for c in cats:
             channels = await icc_db.get_category_channels(c["id"])
-            flag = " (reserve)" if c["is_reserve"] else ""
             active = "" if c["active"] else " **[inactive]**"
             helper = f" helper=<@&{c['helper_role_id']}>" if c["helper_role_id"] else ""
+            reserves = f" / {c['reserve_slots']} reserves" if c.get("reserve_slots") else ""
             lines.append(
-                f"**{c['name']}**{flag}{active} — {c['required_count']} ch / "
-                f"{c['coin_value']:,} coins / {len(channels)} mapped{helper}"
+                f"**{c['name']}**{active} — {c['required_count']} ch / "
+                f"{c['coin_value']:,} coins / {len(channels)} mapped{helper}{reserves}"
             )
 
         embed = discord.Embed(
@@ -258,16 +262,16 @@ class ICCAdmin(commands.Cog):
     @cat_group.command(name="create", description="Create a new category")
     @app_commands.describe(
         name="Category name", required_count="Number of channels",
-        coin_value="Coin value", is_reserve="Reserve category?",
+        coin_value="Coin value",
     )
     async def category_create(
         self, interaction: Interaction, name: str, required_count: int,
-        coin_value: int = 0, is_reserve: bool = False,
+        coin_value: int = 0,
     ):
         if not await is_icc_admin(interaction):
             return await interaction.response.send_message("You need ICC admin permissions.", ephemeral=True)
         cat_id = await icc_db.create_category(
-            str(interaction.guild_id), name, required_count, coin_value, is_reserve,
+            str(interaction.guild_id), name, required_count, coin_value,
         )
         if not cat_id:
             return await interaction.response.send_message(f"**{name}** already exists.", ephemeral=True)
@@ -276,18 +280,25 @@ class ICCAdmin(commands.Cog):
         )
 
     @cat_group.command(name="edit", description="Edit a category")
-    @app_commands.describe(category="Category name", required_count="Channel count", coin_value="Coin value")
+    @app_commands.describe(
+        category="Category name", required_count="Channel count",
+        coin_value="Coin value", reserve_slots="Number of reserve slots (0 to disable)",
+    )
     @app_commands.autocomplete(category=_category_autocomplete)
     async def category_edit(
         self, interaction: Interaction, category: str,
         required_count: int | None = None, coin_value: int | None = None,
+        reserve_slots: int | None = None,
     ):
         if not await is_icc_admin(interaction):
             return await interaction.response.send_message("You need ICC admin permissions.", ephemeral=True)
         cat = await icc_db.get_category_by_name(str(interaction.guild_id), category)
         if not cat:
             return await interaction.response.send_message(f"**{category}** not found.", ephemeral=True)
-        updated = await icc_db.update_category(cat["id"], required_count=required_count, coin_value=coin_value)
+        updated = await icc_db.update_category(
+            cat["id"], required_count=required_count, coin_value=coin_value,
+            reserve_slots=reserve_slots,
+        )
         if not updated:
             return await interaction.response.send_message("No changes specified.", ephemeral=True)
         await interaction.response.send_message(f"**{cat['name']}** updated.", ephemeral=True)
@@ -465,12 +476,11 @@ class ICCAdmin(commands.Cog):
         if not cat:
             return await interaction.response.send_message(f"**{category}** not found.", ephemeral=True)
         ch_ids = await icc_db.get_category_channels(cat["id"])
-        reserve = " (reserve)" if cat["is_reserve"] else ""
         helper = f"\nHelper role: <@&{cat['helper_role_id']}>" if cat["helper_role_id"] else ""
         active_str = "" if cat["active"] else "\n**[INACTIVE]**"
         mentions = " ".join(f"<#{c}>" for c in ch_ids) if ch_ids else "No channels mapped."
         embed = discord.Embed(
-            title=f"ICC — {cat['name']}{reserve}",
+            title=f"ICC — {cat['name']}",
             description=(
                 f"**Required:** {cat['required_count']} channels\n"
                 f"**Coins:** {cat['coin_value']:,}{helper}{active_str}\n\n"
@@ -657,6 +667,100 @@ class ICCAdmin(commands.Cog):
             title="ICC Progress", description="\n\n".join(lines), colour=0x5865F2,
         )
         embed.set_footer(text=make_footer(guild_id, "ICC"))
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+
+    # ━━ /icc reserve pick / release / list ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+    @reserve_group.command(name="pick", description="Reserve a Pokemon (FCFS across the org)")
+    @app_commands.describe(pokemon="Pokemon name to reserve")
+    async def reserve_pick(self, interaction: Interaction, pokemon: str):
+        guild_id = str(interaction.guild_id)
+        ok, msg = await pick_reserve(guild_id, str(interaction.user.id), pokemon)
+        await interaction.response.send_message(msg, ephemeral=True)
+
+    @reserve_pick.autocomplete("pokemon")
+    async def _reserve_pick_autocomplete(
+        self, interaction: Interaction, current: str,
+    ) -> list[app_commands.Choice[str]]:
+        """Autocomplete from normal + event lists (excluding rare/gmax/eevo/regional)."""
+        choices: list[app_commands.Choice[str]] = []
+        # Normal Pokemon = all base names NOT in rare/gmax/eevo/regional
+        all_bases = await pokemon_list_db.get_all_base_names()
+        for name in all_bases:
+            if current.lower() not in name.lower():
+                continue
+            cat = await pokemon_list_db.get_category_type_for_pokemon(name)
+            if cat in pokemon_list_db.CATEGORY_TYPES:
+                continue
+            choices.append(app_commands.Choice(name=name, value=name))
+            if len(choices) >= 20:
+                break
+        # Event Pokemon
+        event_names = await pokemon_list_db.get_all_event_pokemon_names()
+        for name in event_names:
+            if current.lower() in name.lower():
+                choices.append(app_commands.Choice(name=f"{name} (event)", value=name))
+                if len(choices) >= 25:
+                    break
+        return choices[:25]
+
+    @reserve_group.command(name="release", description="Release a reserved Pokemon")
+    @app_commands.describe(pokemon="Pokemon name to release")
+    async def reserve_release(self, interaction: Interaction, pokemon: str):
+        guild_id = str(interaction.guild_id)
+        ok, msg = await release_reserve(guild_id, str(interaction.user.id), pokemon)
+        await interaction.response.send_message(msg, ephemeral=True)
+
+    @reserve_release.autocomplete("pokemon")
+    async def _reserve_release_autocomplete(
+        self, interaction: Interaction, current: str,
+    ) -> list[app_commands.Choice[str]]:
+        """Autocomplete from user's current reserves."""
+        guild_id = str(interaction.guild_id)
+        reserves = await get_user_reserves(guild_id, str(interaction.user.id))
+        return [
+            app_commands.Choice(name=r["pokemon_name"], value=r["pokemon_name"])
+            for r in reserves if current.lower() in r["pokemon_name"].lower()
+        ][:25]
+
+    @reserve_group.command(name="list", description="Show your reserves (or all reserves)")
+    @app_commands.describe(user="Show reserves for a specific user (admin only)")
+    async def reserve_list(self, interaction: Interaction, user: discord.Member | None = None):
+        guild_id = str(interaction.guild_id)
+        org = await icc_db.get_active_org(guild_id)
+        if not org:
+            return await interaction.response.send_message("No published org is active.", ephemeral=True)
+
+        if user and user.id != interaction.user.id:
+            if not await is_icc_admin(interaction):
+                return await interaction.response.send_message("Only admins can view other users' reserves.", ephemeral=True)
+            reserves = await icc_db.get_reserves_for_owner(org["id"], str(user.id))
+            label = f"<@{user.id}>'s"
+        elif user:
+            reserves = await icc_db.get_reserves_for_owner(org["id"], str(user.id))
+            label = "Your"
+        else:
+            reserves = await icc_db.get_reserves_for_owner(org["id"], str(interaction.user.id))
+            label = "Your"
+
+        if not reserves:
+            return await interaction.response.send_message(f"{label} reserves: none.", ephemeral=True)
+
+        lines = []
+        for r in reserves:
+            status = ""
+            if r["locked"]:
+                status = " [LOCKED]"
+            if r["released"]:
+                status = " [RELEASED]"
+            lines.append(f"\u2022 **{r['pokemon_name']}** (base: {r['base_name']}){status}")
+
+        embed = discord.Embed(
+            title=f"{label} Reserves",
+            description="\n".join(lines),
+            colour=0x5865F2,
+        )
+        embed.set_footer(text=make_footer(guild_id, f"{len(reserves)} reserve(s)"))
         await interaction.response.send_message(embed=embed, ephemeral=True)
 
     @icc.command(name="history", description="Show past org summaries")
