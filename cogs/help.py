@@ -177,48 +177,73 @@ def _section_channels(gid: str) -> tuple[str, str, discord.Embed]:
     return ("🔧", "Channel Management", embed)
 
 
-def _section_incense(gid: str) -> tuple[str, str, discord.Embed]:
+def _section_incense(gid: str, is_admin: bool = False) -> tuple[str, str, discord.Embed]:
     embed = discord.Embed(
         title="🌿  Mass Incense Manager  *(QTs server only)*",
         colour=0x5865F2,
     )
     embed.add_field(
-        name="Setup (admin only)",
+        name="⚡ Prefix commands",
         value=(
-            "`/incense setup role <role>`  — Set the incense manager role\n"
-            "`/incense setup bot <id>`  — Set the Operation Dex bot ID\n"
-            "`/incense setup view`  — View current configuration"
+            "`!pause`  — Lock **all** active incense channels simultaneously\n"
+            "`!pause <group>`  — Lock only the channels in a named group\n"
+            "`!resume`  — Unlock **all** paused incense channels simultaneously\n"
+            "`!resume <group>`  — Unlock only the channels in a named group\n"
+            "`!incset <id1> <id2> ...`  — Bulk register channels by ID\n\n"
+            "*Aliases: `!p` · `!r`*"
         ),
         inline=False,
     )
     embed.add_field(
-        name="Prefix commands",
+        name="📋 Channel registration",
         value=(
-            "`!pause`  — Lock all active incense channels simultaneously\n"
-            "`!resume`  — Unlock all paused incense channels simultaneously\n"
-            "`!incset <id1> <id2> ...`  — Bulk register channels by ID"
-        ),
-        inline=False,
-    )
-    embed.add_field(
-        name="Slash commands",
-        value=(
-            "`/incense add`  — Register channels (single, category, range, multi-cat)\n"
+            "`/incense add`  — Register channels (single, category, range, up to 3 categories)\n"
             "`/incense remove`  — Unregister channels (same flexible options)\n"
+            "`/incense recursive`  — Register all channels after this one (optional end channel)\n"
+            "`/incense status`  — See all channels: ▶️ live / ⏸️ paused / 💤 idle\n"
+            "`/incense clear [channel]`  — Clear a channel's incense record"
+        ),
+        inline=False,
+    )
+    embed.add_field(
+        name="👥 Groups  — target a subset with !p / !r",
+        value=(
+            "`/incense group create <name>`  — Create a group (max 3, e.g. `clan` · `main`)\n"
+            "`/incense group add <name> <ch> [ch2] [ch3]`  — Add channels to a group\n"
+            "`/incense group remove <name> <ch> [ch2] [ch3]`  — Remove channels from a group\n"
+            "`/incense group list`  — See all groups and their channels\n"
+            "`/incense group delete <name>`  — Delete a group (channels stay registered)\n\n"
+            "*Example: `!p clan` pauses only clan-group channels.*"
+        ),
+        inline=False,
+    )
+    embed.add_field(
+        name="🔧 Manual lock / resync",
+        value=(
             "`/incense lock [channel]`  — Lock a specific channel\n"
             "`/incense unlock [channel]`  — Unlock a specific channel\n"
-            "`/incense recursive`  — Register a range of consecutive channels\n"
-            "`/incense status`  — See all channels: live / paused / idle\n"
-            "`/incense clear [channel]`  — Clear incense record\n"
-            "`/incense log [user] [channel]`  — View audit log (admin only)"
+            "`/incense resync`  — Scan history, fix any missed locks, clean old bot messages\n"
+            "   ↳ *Use this when a pre-existing or 'cracked' incense wasn't detected*"
         ),
         inline=False,
     )
+    if is_admin:
+        embed.add_field(
+            name="⚙️ Setup  *(admin only)*",
+            value=(
+                "`/incense setup role <role>`  — Set who can use incense manager commands\n"
+                "`/incense setup bot <id>`  — Set the Operation Dex bot to watch\n"
+                "`/incense setup view`  — View current configuration\n"
+                "`/incense log [user] [channel]`  — View the full audit log"
+            ),
+            inline=False,
+        )
     embed.add_field(
-        name="Auto-behaviour",
+        name="🤖 Auto-behaviour",
         value=(
-            "When Operation Dex activates an incense in a registered channel,\n"
-            "the channel is locked automatically and a notification is posted."
+            "When Operation Dex activates an incense in a registered channel, "
+            "the channel is **locked automatically** and a notification is posted.\n"
+            "Run `!resume` (or `!resume <group>`) when all channels are ready to go live simultaneously."
         ),
         inline=False,
     )
@@ -542,7 +567,7 @@ class HelpCog(commands.Cog):
             sections.append(_section_starboard(gid))
             sections.append(_section_channels(gid))
         if show_incense:
-            sections.append(_section_incense(gid))
+            sections.append(_section_incense(gid, is_admin=admin))
         if admin:
             sections.append(_section_icc(gid))
         sections.append(_section_changelog(gid))
