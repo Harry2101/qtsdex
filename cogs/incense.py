@@ -162,6 +162,93 @@ def _parse_incense_activation(message: discord.Message) -> tuple[bool, str, int]
     return (incense_type, total_spawns) if activated else None
 
 
+def _parse_incense_active(message: discord.Message) -> tuple[str, int] | None:
+    """
+    Detect an *already-running* incense from any Operation Dex embed style.
+    Returns (incense_type, spawns_remaining) or None.
+
+    Handles all known Op Dex embed formats:
+      • "Incense Activated!" title / description
+      • Spawn embeds: "X Incense Active" in title or description
+      • Footer / field text showing spawns left
+      • Any embed mentioning "Incense Active" with a spawn count
+    """
+    for embed in message.embeds:
+        title   = embed.title or ""
+        desc    = embed.description or ""
+        combined = f"{title}\n{desc}"
+        # Also collect field values
+        for f in embed.fields:
+            combined += f"\n{f.name}\n{f.value}"
+
+        combined_low = combined.lower()
+
+        # --- style 1: activation embed ("Incense Activated!") ---
+        if "incense activated" in combined_low:
+            inc_type = "Standard"
+            spawns   = 0
+            m = re.search(r"(\w+)\s+incense\s+is\s+now\s+burning", combined, re.IGNORECASE)
+            if m:
+                inc_type = m.group(1).title()
+            else:
+                # Try "a <Type> Incense has been activated"
+                m2 = re.search(r"(\w+)\s+incense\s+(?:has been|was)\s+activated", combined, re.IGNORECASE)
+                if m2:
+                    inc_type = m2.group(1).title()
+            sm = re.search(r"(\d+)\s+(?:total\s+)?spawns?", combined, re.IGNORECASE)
+            if sm:
+                spawns = int(sm.group(1))
+            return (inc_type, spawns)
+
+        # --- style 2: "Incense Active" anywhere in title or description ---
+        if "incense active" in combined_low or "incense is active" in combined_low:
+            inc_type = "Standard"
+            spawns   = 0
+            # Extract type: "<Type> Incense Active" or "<Type> Incense is Active"
+            m = re.search(
+                r"([A-Za-z][\w\s]{0,20}?)\s+Incense\s+(?:is\s+)?Active",
+                combined, re.IGNORECASE,
+            )
+            if m:
+                raw = m.group(1).strip().split()[-1]  # last word (avoid grabbing long phrases)
+                if raw.lower() not in ("an", "a", "the", "is", "was"):
+                    inc_type = raw.title()
+            # Extract spawns remaining
+            sm = re.search(
+                r"(\d+)\s+spawns?\s+(?:left|remaining|rem)|"
+                r"spawns?\s+(?:left|remaining|rem)[:\s]+(\d+)|"
+                r"(\d+)\s+spawns?",
+                combined, re.IGNORECASE,
+            )
+            if sm:
+                spawns = int(next(g for g in sm.groups() if g is not None))
+            return (inc_type, spawns)
+
+        # --- style 3: footer text "Incense Active" ---
+        if embed.footer and embed.footer.text:
+            if "incense active" in embed.footer.text.lower():
+                inc_type = "Standard"
+                spawns   = 0
+                m = re.search(
+                    r"([A-Za-z]+)\s+Incense\s+Active",
+                    embed.footer.text, re.IGNORECASE,
+                )
+                if m and m.group(1).lower() not in ("an", "a", "the"):
+                    inc_type = m.group(1).title()
+                sm = re.search(r"(\d+)\s+spawns?", embed.footer.text, re.IGNORECASE)
+                if sm:
+                    spawns = int(sm.group(1))
+                return (inc_type, spawns)
+
+    # Plain content fallback
+    if "incense active" in message.content.lower() or "incense activated" in message.content.lower():
+        sm = re.search(r"(\d+)\s+spawns?", message.content, re.IGNORECASE)
+        spawns = int(sm.group(1)) if sm else 0
+        return ("Standard", spawns)
+
+    return None
+
+
 async def _check_and_lock_active_incense(
     channel: discord.TextChannel,
     guild_id: str,
@@ -176,7 +263,7 @@ async def _check_and_lock_active_incense(
         async for msg in channel.history(limit=50):
             if msg.author.id != opdex_id:
                 continue
-            result = _parse_incense_activation(msg)
+            result = _parse_incense_active(msg)
             if result is None:
                 continue
             incense_type, total_spawns = result
@@ -198,6 +285,46 @@ async def _check_and_lock_active_incense(
     except (discord.Forbidden, discord.HTTPException) as e:
         log.warning(f"Couldn't scan #{channel.name} for active incense: {e}")
     return False
+
+
+async def _resync_unregistered_channels(
+    guild: discord.Guild,
+    guild_id: str,
+    channel_ids: list[str],
+    opdex_id: int,
+    bot_uid: str,
+) -> list[str]:
+    """
+    For channels that are registered but have NO active_incenses DB record,
+    scan history for a running incense and register + lock if found.
+    Returns list of channel_ids that were newly registered.
+    """
+    newly_registered = []
+    for cid in channel_ids:
+        ch = guild.get_channel(int(cid))
+        if ch is None:
+            continue
+        try:
+            async for msg in ch.history(limit=75):
+                if msg.author.id != opdex_id:
+                    continue
+                result = _parse_incense_active(msg)
+                if result is None:
+                    continue
+                inc_type, spawns = result
+                await incense_db.register_incense(guild_id, cid, inc_type, spawns)
+                await incense_db.set_paused(guild_id, cid, True)
+                if not _is_channel_locked(ch, opdex_id):
+                    await _lock_channel(ch, opdex_id)
+                await incense_db.log_action(
+                    guild_id, bot_uid, "resync_auto",
+                    f"Auto-registered #{ch.name} on !p/!r ({inc_type}, {spawns} spawns)",
+                )
+                newly_registered.append(cid)
+                break
+        except (discord.Forbidden, discord.HTTPException):
+            pass
+    return newly_registered
 
 
 # ── Channel list helpers ──────────────────────────────────────────────────────
@@ -741,6 +868,20 @@ class IncenseCog(commands.Cog):
                     f"⚠️ No group named **{group}**. Known groups: {known_str}\n"
                     f"Create one with `/incense group create`."
                 )
+            candidate_ids = await incense_db.get_group_channels(guild_id, group)
+        else:
+            candidate_ids = await incense_db.get_channels(guild_id)
+
+        # Auto-resync channels that are registered but have no DB record
+        # (catches incenses cracked before the bot was set up, or missed activations)
+        known_active_ids = {r["channel_id"] for r in await incense_db.get_active_incenses(guild_id)}
+        unregistered = [c for c in candidate_ids if c not in known_active_ids]
+        if unregistered:
+            await _resync_unregistered_channels(
+                ctx.guild, guild_id, unregistered, opdex_id, str(self.bot.user.id)
+            )
+
+        if group:
             actives = await incense_db.get_active_incenses_for_group(guild_id, group)
         else:
             actives = await incense_db.get_active_incenses(guild_id)
@@ -752,7 +893,9 @@ class IncenseCog(commands.Cog):
                     title="ℹ️ Nothing to Pause",
                     description=(
                         f"No active incenses are currently running in {scope}.\n\n"
-                        "Channels are locked automatically when an incense activates."
+                        "Channels are locked automatically when an incense activates.\n"
+                        "If incenses were started before the bot was set up, "
+                        "run `/incense resync` to scan channel history."
                     ),
                     colour=0x5865F2,
                 )
@@ -819,6 +962,19 @@ class IncenseCog(commands.Cog):
                     f"⚠️ No group named **{group}**. Known groups: {known_str}\n"
                     f"Create one with `/incense group create`."
                 )
+            candidate_ids = await incense_db.get_group_channels(guild_id, group)
+        else:
+            candidate_ids = await incense_db.get_channels(guild_id)
+
+        # Auto-resync channels with no DB record (pre-existing / cracked incenses)
+        known_active_ids = {r["channel_id"] for r in await incense_db.get_active_incenses(guild_id)}
+        unregistered = [c for c in candidate_ids if c not in known_active_ids]
+        if unregistered:
+            await _resync_unregistered_channels(
+                ctx.guild, guild_id, unregistered, opdex_id, str(self.bot.user.id)
+            )
+
+        if group:
             actives = await incense_db.get_active_incenses_for_group(guild_id, group)
         else:
             actives = await incense_db.get_active_incenses(guild_id)
@@ -830,7 +986,9 @@ class IncenseCog(commands.Cog):
                     title="ℹ️ Nothing to Resume",
                     description=(
                         f"No active incenses are currently paused in {scope}.\n\n"
-                        "Incenses register automatically when activated in a registered channel."
+                        "Incenses register automatically when activated in a registered channel.\n"
+                        "If incenses were started before the bot was set up, "
+                        "run `/incense resync` to scan channel history."
                     ),
                     colour=0x5865F2,
                 )
@@ -1658,27 +1816,9 @@ class IncenseCog(commands.Cog):
                     if msg.author.id != opdex_id:
                         continue
 
-                    # Check for "Incense Active" in spawns-remaining embed (the spawn embed)
-                    for emb in msg.embeds:
-                        desc = emb.description or ""
-                        # The spawn embed shows "Incense Active" with spawns left & time left
-                        inc_active_match = re.search(
-                            r"(\w[\w\s]+?)\s+Incense\b.*?\*\s*(\d+)\s+spawns?\s+left",
-                            desc, re.IGNORECASE | re.DOTALL,
-                        )
-                        if inc_active_match:
-                            raw_type   = inc_active_match.group(1).strip().title()
-                            spawns_rem = int(inc_active_match.group(2))
-                            found_inc  = (raw_type, spawns_rem)
-                            break
-
-                        # Also catch "Incense Activated!" title style
-                        result = _parse_incense_activation(msg)
-                        if result:
-                            found_inc = result
-                            break
-
-                    if found_inc:
+                    result = _parse_incense_active(msg)
+                    if result:
+                        found_inc = result
                         break
 
             except (discord.Forbidden, discord.HTTPException) as e:
@@ -1927,24 +2067,85 @@ class IncenseCog(commands.Cog):
                 ephemeral=True,
             )
 
+        await interaction.response.defer(thinking=True)
+
+        opdex_id = await _get_opdex_id(gid)
+        # Build a lookup: channel_id → active_incense record
+        all_actives = {r["channel_id"]: r for r in await incense_db.get_active_incenses(gid)}
+
         embed = discord.Embed(
             title="👥 Incense Groups",
-            description=f"**{len(groups)}/{incense_db.MAX_GROUPS_PER_GUILD}** groups defined.",
+            description=(
+                f"**{len(groups)}/{incense_db.MAX_GROUPS_PER_GUILD}** groups defined.\n"
+                f"▶️ live  •  ⏸️ paused  •  💤 idle\n\n"
+                f"Use `!p <group>` / `!r <group>` to target a group."
+            ),
             colour=0x5865F2,
         )
+
         for gname in groups:
             cids = await incense_db.get_group_channels(gid, gname)
-            if cids:
-                cids = _sort_channel_ids(interaction.guild, cids)
-                val = ", ".join(f"<#{c}>" for c in cids[:20])
-                if len(cids) > 20:
-                    val += f" *+{len(cids)-20} more*"
-            else:
-                val = "*No channels yet*"
-            embed.add_field(name=f"**{gname}**  ({len(cids)} ch)", value=val, inline=False)
+            if not cids:
+                embed.add_field(
+                    name=f"**{gname.upper()}**  —  0 channels",
+                    value="*No channels yet — use `/incense group add`*",
+                    inline=False,
+                )
+                # Spacer so next group starts fresh
+                embed.add_field(name="​", value="​", inline=False)
+                continue
 
-        embed.set_footer(text=make_footer(gid, f"Tip: !p <group> / !r <group> to target a group"))
-        await interaction.response.send_message(embed=embed)
+            cids = _sort_channel_ids(interaction.guild, cids)
+
+            # Annotate each channel with its state icon
+            live_n = paused_n = idle_n = 0
+            annotated: list[str] = []
+            for cid in cids:
+                ch = interaction.guild.get_channel(int(cid))
+                mention = f"<#{cid}>" if ch else f"`{cid}` *(gone)*"
+                rec = all_actives.get(cid)
+                if rec:
+                    if rec["paused"] or (ch and _is_channel_locked(ch, opdex_id)):
+                        annotated.append(f"⏸️ {mention}")
+                        paused_n += 1
+                    else:
+                        inc_label = rec.get("incense_type", "")
+                        annotated.append(f"▶️ {mention}" + (f" *({inc_label})*" if inc_label else ""))
+                        live_n += 1
+                else:
+                    annotated.append(f"💤 {mention}")
+                    idle_n += 1
+
+            # Summary line for the group
+            summary_parts = []
+            if live_n:
+                summary_parts.append(f"▶️ {live_n} live")
+            if paused_n:
+                summary_parts.append(f"⏸️ {paused_n} paused")
+            if idle_n:
+                summary_parts.append(f"💤 {idle_n} idle")
+            summary = "  •  ".join(summary_parts) if summary_parts else "all idle"
+
+            field_title = f"**{gname.upper()}**  —  {len(cids)} ch  ({summary})"
+
+            # Split into two columns
+            half = (len(annotated) + 1) // 2
+            left  = annotated[:half]
+            right = annotated[half:]
+
+            cap = 15  # max per column
+            if len(left) > cap:
+                extra = len(left) - cap + (len(right) - cap if len(right) > cap else 0)
+                left  = left[:cap]
+                right = right[:cap]
+                right.append(f"*+{extra} more…*")
+
+            embed.add_field(name=field_title, value="\n".join(left), inline=True)
+            embed.add_field(name="​", value="\n".join(right) if right else "​", inline=True)
+            embed.add_field(name="​", value="​", inline=False)  # row break
+
+        embed.set_footer(text=make_footer(gid, "Incense Manager  •  Groups"))
+        await interaction.followup.send(embed=embed)
 
     # ── /incense log ─────────────────────────────────────────────────────────
 
