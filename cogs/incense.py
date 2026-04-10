@@ -1962,17 +1962,23 @@ class IncenseCog(commands.Cog):
     @group_group.command(name="add", description="Add channels to an incense group.")
     @app_commands.describe(
         name="Group name",
-        channel="Channel to add",
-        channel2="Second channel (optional)",
-        channel3="Third channel (optional)",
+        channel="A single channel to add",
+        category="Add all channels in this Discord category",
+        category2="Second Discord category (optional)",
+        category3="Third Discord category (optional)",
+        from_channel="Start of a channel range (inclusive)",
+        to_channel="End of a channel range (inclusive)",
     )
     async def group_add(
         self,
         interaction: discord.Interaction,
         name: str,
-        channel:  discord.TextChannel,
-        channel2: Optional[discord.TextChannel] = None,
-        channel3: Optional[discord.TextChannel] = None,
+        channel:   Optional[discord.TextChannel]     = None,
+        category:  Optional[discord.CategoryChannel] = None,
+        category2: Optional[discord.CategoryChannel] = None,
+        category3: Optional[discord.CategoryChannel] = None,
+        from_channel: Optional[discord.TextChannel]  = None,
+        to_channel:   Optional[discord.TextChannel]  = None,
     ):
         if not _is_qt_guild(interaction):
             return await interaction.response.send_message(_NOT_QT_MSG, ephemeral=True)
@@ -1987,20 +1993,56 @@ class IncenseCog(commands.Cog):
                 f"⚠️ No group named **{gname}**. Create it first with `/incense group create`.",
                 ephemeral=True,
             )
-        targets = [ch for ch in [channel, channel2, channel3] if ch is not None]
-        cids = [str(ch.id) for ch in targets]
+
+        targets: list[discord.TextChannel] = []
+        if channel:
+            targets.append(channel)
+        for cat in [category, category2, category3]:
+            if cat:
+                targets.extend(ch for ch in cat.channels if isinstance(ch, discord.TextChannel) and ch not in targets)
+        if from_channel and to_channel:
+            pool = sorted(
+                [ch for ch in interaction.guild.text_channels if ch.category == from_channel.category],
+                key=lambda c: c.position,
+            )
+            try:
+                si = next(i for i, c in enumerate(pool) if c.id == from_channel.id)
+                ei = next(i for i, c in enumerate(pool) if c.id == to_channel.id)
+            except StopIteration:
+                return await interaction.response.send_message(
+                    "❌ Could not resolve range — ensure both channels are in the same category.", ephemeral=True
+                )
+            if si > ei:
+                si, ei = ei, si
+            for ch in pool[si:ei + 1]:
+                if ch not in targets:
+                    targets.append(ch)
+        elif from_channel or to_channel:
+            return await interaction.response.send_message(
+                "⚠️ Provide **both** `from_channel` and `to_channel` for a range.", ephemeral=True
+            )
+
+        if not targets:
+            return await interaction.response.send_message(
+                "⚠️ No channels specified. Provide `channel`, `category`, or `from_channel`+`to_channel`.",
+                ephemeral=True,
+            )
+
+        seen: set[int] = set()
+        unique = [ch for ch in targets if not (ch.id in seen or seen.add(ch.id))]
+        cids = [str(ch.id) for ch in unique]
         added, already = await incense_db.add_channels_to_group(gid, gname, cids)
-        not_registered = [str(ch.id) for ch in targets if str(ch.id) not in added and str(ch.id) not in already]
+        not_registered = [c for c in cids if c not in added and c not in already]
 
         embed = discord.Embed(title=f"👥 Group **{gname}** Updated", colour=0x57F287)
         if added:
-            embed.add_field(name=f"✅ Added ({len(added)})", value="\n".join(f"<#{c}>" for c in added), inline=True)
+            embed.add_field(name=f"✅ Added ({len(added)})", value="\n".join(f"<#{c}>" for c in added[:20]), inline=True)
         if already:
-            embed.add_field(name=f"⏭️ Already in group ({len(already)})", value="\n".join(f"<#{c}>" for c in already), inline=True)
+            embed.add_field(name=f"⏭️ Already in group ({len(already)})", value="\n".join(f"<#{c}>" for c in already[:20]), inline=True)
         if not_registered:
             embed.add_field(
                 name=f"⚠️ Not an incense channel ({len(not_registered)})",
-                value="\n".join(f"<#{c}>" for c in not_registered) + "\n*Register first with `/incense add`*",
+                value="\n".join(f"<#{c}>" for c in not_registered[:20]) + "\n*Register first with `/incense add`*",
                 inline=False,
             )
         embed.set_footer(text=make_footer(gid, "Incense Manager"))
@@ -2009,17 +2051,23 @@ class IncenseCog(commands.Cog):
     @group_group.command(name="remove", description="Remove channels from an incense group.")
     @app_commands.describe(
         name="Group name",
-        channel="Channel to remove",
-        channel2="Second channel (optional)",
-        channel3="Third channel (optional)",
+        channel="A single channel to remove",
+        category="Remove all channels in this Discord category",
+        category2="Second Discord category (optional)",
+        category3="Third Discord category (optional)",
+        from_channel="Start of a channel range (inclusive)",
+        to_channel="End of a channel range (inclusive)",
     )
     async def group_remove(
         self,
         interaction: discord.Interaction,
         name: str,
-        channel:  discord.TextChannel,
-        channel2: Optional[discord.TextChannel] = None,
-        channel3: Optional[discord.TextChannel] = None,
+        channel:   Optional[discord.TextChannel]     = None,
+        category:  Optional[discord.CategoryChannel] = None,
+        category2: Optional[discord.CategoryChannel] = None,
+        category3: Optional[discord.CategoryChannel] = None,
+        from_channel: Optional[discord.TextChannel]  = None,
+        to_channel:   Optional[discord.TextChannel]  = None,
     ):
         if not _is_qt_guild(interaction):
             return await interaction.response.send_message(_NOT_QT_MSG, ephemeral=True)
@@ -2029,16 +2077,52 @@ class IncenseCog(commands.Cog):
             )
         gid = str(interaction.guild_id)
         gname = name.strip().lower()
-        targets = [ch for ch in [channel, channel2, channel3] if ch is not None]
-        cids = [str(ch.id) for ch in targets]
+
+        targets: list[discord.TextChannel] = []
+        if channel:
+            targets.append(channel)
+        for cat in [category, category2, category3]:
+            if cat:
+                targets.extend(ch for ch in cat.channels if isinstance(ch, discord.TextChannel) and ch not in targets)
+        if from_channel and to_channel:
+            pool = sorted(
+                [ch for ch in interaction.guild.text_channels if ch.category == from_channel.category],
+                key=lambda c: c.position,
+            )
+            try:
+                si = next(i for i, c in enumerate(pool) if c.id == from_channel.id)
+                ei = next(i for i, c in enumerate(pool) if c.id == to_channel.id)
+            except StopIteration:
+                return await interaction.response.send_message(
+                    "❌ Could not resolve range — ensure both channels are in the same category.", ephemeral=True
+                )
+            if si > ei:
+                si, ei = ei, si
+            for ch in pool[si:ei + 1]:
+                if ch not in targets:
+                    targets.append(ch)
+        elif from_channel or to_channel:
+            return await interaction.response.send_message(
+                "⚠️ Provide **both** `from_channel` and `to_channel` for a range.", ephemeral=True
+            )
+
+        if not targets:
+            return await interaction.response.send_message(
+                "⚠️ No channels specified. Provide `channel`, `category`, or `from_channel`+`to_channel`.",
+                ephemeral=True,
+            )
+
+        seen: set[int] = set()
+        unique = [ch for ch in targets if not (ch.id in seen or seen.add(ch.id))]
+        cids = [str(ch.id) for ch in unique]
         removed = await incense_db.remove_channels_from_group(gid, gname, cids)
         not_in_group = [c for c in cids if c not in removed]
 
         embed = discord.Embed(title=f"👥 Group **{gname}** Updated", colour=0xFEE75C)
         if removed:
-            embed.add_field(name=f"✅ Removed ({len(removed)})", value="\n".join(f"<#{c}>" for c in removed), inline=True)
+            embed.add_field(name=f"✅ Removed ({len(removed)})", value="\n".join(f"<#{c}>" for c in removed[:20]), inline=True)
         if not_in_group:
-            embed.add_field(name=f"⏭️ Not in group ({len(not_in_group)})", value="\n".join(f"<#{c}>" for c in not_in_group), inline=True)
+            embed.add_field(name=f"⏭️ Not in group ({len(not_in_group)})", value="\n".join(f"<#{c}>" for c in not_in_group[:20]), inline=True)
         embed.set_footer(text=make_footer(gid, "Incense Manager"))
         await interaction.response.send_message(embed=embed)
 
