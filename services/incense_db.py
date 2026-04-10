@@ -6,6 +6,8 @@ Designed for concurrent access from 50–200 channels.
 Tables:
   incense_channels  — registered incense channels per guild
   active_incenses   — channels currently running an incense (paused or live)
+  incense_groups    — named groups of channels (max 3 per guild)
+  incense_group_channels — membership: which channels belong to which group
 """
 
 import asyncio
@@ -60,6 +62,25 @@ async def init_db():
                 ON audit_log (guild_id, created_at DESC);
             CREATE INDEX IF NOT EXISTS idx_audit_user
                 ON audit_log (guild_id, user_id, created_at DESC);
+
+            CREATE TABLE IF NOT EXISTS incense_groups (
+                guild_id    TEXT NOT NULL,
+                group_name  TEXT NOT NULL,
+                created_by  TEXT NOT NULL DEFAULT '',
+                created_at  TEXT NOT NULL DEFAULT (datetime('now')),
+                PRIMARY KEY (guild_id, group_name)
+            );
+
+            CREATE TABLE IF NOT EXISTS incense_group_channels (
+                guild_id    TEXT NOT NULL,
+                group_name  TEXT NOT NULL,
+                channel_id  TEXT NOT NULL,
+                PRIMARY KEY (guild_id, group_name, channel_id),
+                FOREIGN KEY (guild_id, group_name)
+                    REFERENCES incense_groups (guild_id, group_name) ON DELETE CASCADE,
+                FOREIGN KEY (guild_id, channel_id)
+                    REFERENCES incense_channels (guild_id, channel_id) ON DELETE CASCADE
+            );
         """)
         await db.commit()
 
@@ -339,5 +360,164 @@ async def get_user_action_summary(guild_id: str) -> list[dict]:
             rows = await cur.fetchall()
             return [
                 {"user_id": r[0], "total": r[1], "last_action": r[2]}
+                for r in rows
+            ]
+
+
+# ── Incense groups ────────────────────────────────────────────────────────────
+
+MAX_GROUPS_PER_GUILD = 3
+
+
+async def create_group(guild_id: str, group_name: str, created_by: str = "") -> bool:
+    """
+    Create a named group. Returns True if created, False if name already exists.
+    Raises ValueError if the guild already has MAX_GROUPS_PER_GUILD groups.
+    """
+    async with _write_lock:
+        async with aiosqlite.connect(DB_PATH) as db:
+            await db.execute("PRAGMA foreign_keys = ON")
+            async with db.execute(
+                "SELECT COUNT(*) FROM incense_groups WHERE guild_id=?", (guild_id,)
+            ) as cur:
+                count = (await cur.fetchone())[0]
+            if count >= MAX_GROUPS_PER_GUILD:
+                raise ValueError(f"Max {MAX_GROUPS_PER_GUILD} groups per server")
+            try:
+                await db.execute(
+                    "INSERT INTO incense_groups (guild_id, group_name, created_by) VALUES (?,?,?)",
+                    (guild_id, group_name.lower(), created_by),
+                )
+                await db.commit()
+                return True
+            except aiosqlite.IntegrityError:
+                return False
+
+
+async def delete_group(guild_id: str, group_name: str) -> bool:
+    """Delete a group (and its memberships). Returns True if it existed."""
+    async with _write_lock:
+        async with aiosqlite.connect(DB_PATH) as db:
+            await db.execute("PRAGMA foreign_keys = ON")
+            cur = await db.execute(
+                "DELETE FROM incense_groups WHERE guild_id=? AND group_name=?",
+                (guild_id, group_name.lower()),
+            )
+            await db.commit()
+            return cur.rowcount > 0
+
+
+async def get_groups(guild_id: str) -> list[str]:
+    """All group names for a guild, alphabetical."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        async with db.execute(
+            "SELECT group_name FROM incense_groups WHERE guild_id=? ORDER BY group_name",
+            (guild_id,),
+        ) as cur:
+            return [r[0] for r in await cur.fetchall()]
+
+
+async def group_exists(guild_id: str, group_name: str) -> bool:
+    async with aiosqlite.connect(DB_PATH) as db:
+        async with db.execute(
+            "SELECT 1 FROM incense_groups WHERE guild_id=? AND group_name=?",
+            (guild_id, group_name.lower()),
+        ) as cur:
+            return await cur.fetchone() is not None
+
+
+async def add_channels_to_group(
+    guild_id: str, group_name: str, channel_ids: list[str]
+) -> tuple[list[str], list[str]]:
+    """
+    Add channels to a group. Only channels already in incense_channels are accepted.
+    Returns (added, already_in_group).
+    """
+    added = []
+    already = []
+    async with _write_lock:
+        async with aiosqlite.connect(DB_PATH) as db:
+            await db.execute("PRAGMA foreign_keys = ON")
+            gn = group_name.lower()
+            for cid in channel_ids:
+                # Must be a registered incense channel
+                async with db.execute(
+                    "SELECT 1 FROM incense_channels WHERE guild_id=? AND channel_id=?",
+                    (guild_id, cid),
+                ) as cur:
+                    if not await cur.fetchone():
+                        continue  # skip unregistered channels silently
+                try:
+                    await db.execute(
+                        "INSERT INTO incense_group_channels (guild_id, group_name, channel_id) VALUES (?,?,?)",
+                        (guild_id, gn, cid),
+                    )
+                    added.append(cid)
+                except aiosqlite.IntegrityError:
+                    already.append(cid)
+            await db.commit()
+    return added, already
+
+
+async def remove_channels_from_group(
+    guild_id: str, group_name: str, channel_ids: list[str]
+) -> list[str]:
+    """Remove channels from a group. Returns list of actually-removed IDs."""
+    removed = []
+    async with _write_lock:
+        async with aiosqlite.connect(DB_PATH) as db:
+            gn = group_name.lower()
+            for cid in channel_ids:
+                cur = await db.execute(
+                    "DELETE FROM incense_group_channels WHERE guild_id=? AND group_name=? AND channel_id=?",
+                    (guild_id, gn, cid),
+                )
+                if cur.rowcount > 0:
+                    removed.append(cid)
+            await db.commit()
+    return removed
+
+
+async def get_group_channels(guild_id: str, group_name: str) -> list[str]:
+    """All channel IDs in a group."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        async with db.execute(
+            "SELECT channel_id FROM incense_group_channels WHERE guild_id=? AND group_name=?",
+            (guild_id, group_name.lower()),
+        ) as cur:
+            return [r[0] for r in await cur.fetchall()]
+
+
+async def get_channel_groups(guild_id: str, channel_id: str) -> list[str]:
+    """All group names that a channel belongs to."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        async with db.execute(
+            "SELECT group_name FROM incense_group_channels WHERE guild_id=? AND channel_id=?",
+            (guild_id, channel_id),
+        ) as cur:
+            return [r[0] for r in await cur.fetchall()]
+
+
+async def get_active_incenses_for_group(guild_id: str, group_name: str) -> list[dict]:
+    """Active incense records filtered to a specific group's channels."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        async with db.execute(
+            """SELECT ai.channel_id, ai.incense_type, ai.total_spawns, ai.paused, ai.started_at
+               FROM active_incenses ai
+               JOIN incense_group_channels igc
+                 ON ai.guild_id = igc.guild_id AND ai.channel_id = igc.channel_id
+               WHERE ai.guild_id=? AND igc.group_name=?
+               ORDER BY ai.started_at""",
+            (guild_id, group_name.lower()),
+        ) as cur:
+            rows = await cur.fetchall()
+            return [
+                {
+                    "channel_id":   r[0],
+                    "incense_type": r[1],
+                    "total_spawns": r[2],
+                    "paused":       bool(r[3]),
+                    "started_at":   r[4],
+                }
                 for r in rows
             ]

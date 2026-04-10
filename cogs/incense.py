@@ -3,8 +3,8 @@ cogs/incense.py  —  Incense Management System
 Handles Mass Incense operations for clan servers.
 
 Prefix commands (incense manager role or bot owner only):
-  !pause              — pause all active incenses in the server
-  !resume             — resume all paused incenses
+  !pause [group]      — pause all active incenses (or just a named group)
+  !resume [group]     — resume all paused incenses (or just a named group)
   !incset ID1 ID2...  — bulk register incense channels
 
 Slash commands (grouped under /incense):
@@ -15,8 +15,14 @@ Slash commands (grouped under /incense):
   /incense recursive  — set every channel after this one as an inc channel
   /incense status     — show all incense channels and their states
   /incense clear      — clear all incense data for a channel
+  /incense resync     — scan history, fix lock state, clean old bot messages
   /incense setup      — configure incense manager role and Operation Dex bot
   /incense log        — view audit log of incense operations
+  /incense group create  — create a named channel group (max 3)
+  /incense group delete  — delete a group
+  /incense group add     — add channels to a group
+  /incense group remove  — remove channels from a group
+  /incense group list    — list all groups and their channels
 
 Auto-behaviour:
   When Operation Dex bot sends "Incense Activated!" in a registered channel,
@@ -712,7 +718,8 @@ class IncenseCog(commands.Cog):
     # ── !pause ────────────────────────────────────────────────────────────────
 
     @commands.command(name="pause", aliases=["p"])
-    async def pause_cmd(self, ctx: commands.Context):
+    async def pause_cmd(self, ctx: commands.Context, group: str = ""):
+        """Pause all incenses, or just a named group: !pause [group]"""
         if not _is_qt_guild(ctx):
             return
         if not await _is_authorised(ctx):
@@ -723,14 +730,28 @@ class IncenseCog(commands.Cog):
 
         guild_id = str(ctx.guild.id)
         opdex_id = await _get_opdex_id(guild_id)
-        actives  = await incense_db.get_active_incenses(guild_id)
+
+        # Resolve group filter
+        group = group.strip().lower()
+        if group:
+            if not await incense_db.group_exists(guild_id, group):
+                known = await incense_db.get_groups(guild_id)
+                known_str = ", ".join(f"**{g}**" for g in known) if known else "*none created yet*"
+                return await ctx.send(
+                    f"⚠️ No group named **{group}**. Known groups: {known_str}\n"
+                    f"Create one with `/incense group create`."
+                )
+            actives = await incense_db.get_active_incenses_for_group(guild_id, group)
+        else:
+            actives = await incense_db.get_active_incenses(guild_id)
 
         if not actives:
+            scope = f"group **{group}**" if group else "any registered channel"
             return await ctx.send(
                 embed=discord.Embed(
                     title="ℹ️ Nothing to Pause",
                     description=(
-                        "No active incenses are currently running.\n\n"
+                        f"No active incenses are currently running in {scope}.\n\n"
                         "Channels are locked automatically when an incense activates."
                     ),
                     colour=0x5865F2,
@@ -745,7 +766,6 @@ class IncenseCog(commands.Cog):
         async def process(record: dict):
             ch = ctx.guild.get_channel(int(record["channel_id"]))
             if not ch:
-                # Stale channel — clean up
                 await incense_db.remove_channel_and_incense(guild_id, record["channel_id"])
                 cleaned.append(record["channel_id"])
                 return
@@ -762,16 +782,22 @@ class IncenseCog(commands.Cog):
 
         await asyncio.gather(*[process(r) for r in actives])
 
+        action = f"mass_pause:{group}" if group else "mass_pause"
         await incense_db.log_action(
-            guild_id, str(ctx.author.id), "mass_pause",
+            guild_id, str(ctx.author.id), action,
             f"Locked {len(locked)}, already {len(already)}, failed {len(failed)}, cleaned {len(cleaned)}"
+            + (f" [group={group}]" if group else "")
         )
-        await ctx.send(embed=_pause_embed(locked, already, failed, cleaned, guild_id, ctx.guild))
+        embed = _pause_embed(locked, already, failed, cleaned, guild_id, ctx.guild)
+        if group:
+            embed.title = f"⏸️  Mass Incense Paused — {group}"
+        await ctx.send(embed=embed)
 
     # ── !resume ───────────────────────────────────────────────────────────────
 
     @commands.command(name="resume", aliases=["r"])
-    async def resume_cmd(self, ctx: commands.Context):
+    async def resume_cmd(self, ctx: commands.Context, group: str = ""):
+        """Resume all incenses, or just a named group: !resume [group]"""
         if not _is_qt_guild(ctx):
             return
         if not await _is_authorised(ctx):
@@ -782,14 +808,28 @@ class IncenseCog(commands.Cog):
 
         guild_id = str(ctx.guild.id)
         opdex_id = await _get_opdex_id(guild_id)
-        actives  = await incense_db.get_active_incenses(guild_id)
+
+        # Resolve group filter
+        group = group.strip().lower()
+        if group:
+            if not await incense_db.group_exists(guild_id, group):
+                known = await incense_db.get_groups(guild_id)
+                known_str = ", ".join(f"**{g}**" for g in known) if known else "*none created yet*"
+                return await ctx.send(
+                    f"⚠️ No group named **{group}**. Known groups: {known_str}\n"
+                    f"Create one with `/incense group create`."
+                )
+            actives = await incense_db.get_active_incenses_for_group(guild_id, group)
+        else:
+            actives = await incense_db.get_active_incenses(guild_id)
 
         if not actives:
+            scope = f"group **{group}**" if group else "any registered channel"
             return await ctx.send(
                 embed=discord.Embed(
                     title="ℹ️ Nothing to Resume",
                     description=(
-                        "No active incenses are currently paused.\n\n"
+                        f"No active incenses are currently paused in {scope}.\n\n"
                         "Incenses register automatically when activated in a registered channel."
                     ),
                     colour=0x5865F2,
@@ -820,7 +860,8 @@ class IncenseCog(commands.Cog):
                         description="The incense is now **active** — Pokémon are spawning! Good luck, trainers! 🎉",
                         colour=0x57F287,
                     )
-                    resume_embed.set_footer(text=make_footer(guild_id, "Use !pause to pause all incenses"))
+                    footer_hint = f"Use !pause {group} to pause this group" if group else "Use !pause to pause all incenses"
+                    resume_embed.set_footer(text=make_footer(guild_id, footer_hint))
                     await ch.send(embed=resume_embed)
                 except discord.Forbidden:
                     pass
@@ -829,11 +870,16 @@ class IncenseCog(commands.Cog):
 
         await asyncio.gather(*[process(r) for r in actives])
 
+        action = f"mass_resume:{group}" if group else "mass_resume"
         await incense_db.log_action(
-            guild_id, str(ctx.author.id), "mass_resume",
+            guild_id, str(ctx.author.id), action,
             f"Unlocked {len(unlocked)}, already {len(already)}, failed {len(failed)}, cleaned {len(cleaned)}"
+            + (f" [group={group}]" if group else "")
         )
-        await ctx.send(embed=_resume_embed(unlocked, already, failed, cleaned, guild_id, ctx.guild))
+        embed = _resume_embed(unlocked, already, failed, cleaned, guild_id, ctx.guild)
+        if group:
+            embed.title = f"▶️  Mass Incense Resumed — {group}"
+        await ctx.send(embed=embed)
 
     # ── !incset ───────────────────────────────────────────────────────────────
 
@@ -1540,6 +1586,365 @@ class IncenseCog(commands.Cog):
             "It will register fresh on next activation.",
             ephemeral=True,
         )
+
+    # ── /incense resync ──────────────────────────────────────────────────────
+
+    @incense.command(
+        name="resync",
+        description="Scan all registered channels for active incenses and fix lock/DB state.",
+    )
+    async def inc_resync(self, interaction: discord.Interaction):
+        if not _is_qt_guild(interaction):
+            return await interaction.response.send_message(_NOT_QT_MSG, ephemeral=True)
+        if not await _is_authorised(interaction):
+            return await interaction.response.send_message(
+                "🚫 You need the **Incense Manager** role.", ephemeral=True
+            )
+
+        await interaction.response.defer(thinking=True)
+
+        guild_id  = str(interaction.guild_id)
+        guild     = interaction.guild
+        opdex_id  = await _get_opdex_id(guild_id)
+        bot_id    = self.bot.user.id
+        bot_uid   = str(bot_id)
+
+        registered = await incense_db.get_channels(guild_id)
+
+        # Prune stale channels
+        stale = [cid for cid in registered if not guild.get_channel(int(cid))]
+        for cid in stale:
+            await incense_db.remove_channel_and_incense(guild_id, cid)
+        registered = [cid for cid in registered if cid not in stale]
+
+        found_active:    list[str] = []   # had a live incense in history
+        now_locked:      list[str] = []   # we locked it during resync
+        already_locked:  list[str] = []   # was already locked, DB updated
+        cleared_stale:   list[str] = []   # DB said active but no incense found → cleared
+        cleaned_msgs:    int = 0          # bot messages deleted
+
+        # BOT_MSG_MARKERS — titles of messages we sent ourselves that we should clean up
+        _OWN_TITLES = {
+            "🔒  Incense Auto-Paused",
+            "🔒 Channel Locked",
+            "▶️  Mass Incense Resumed",
+            "⏸️  Mass Incense Paused",
+            "▶️ Incense Live!",
+            "🌿 Incense Channel Activated",
+            "⚠️ Auto-Lock Failed",
+        }
+
+        for cid in registered:
+            ch = guild.get_channel(int(cid))
+            if ch is None:
+                continue
+
+            # --- Scan last 75 messages for an Operation Dex incense activation ---
+            found_inc: tuple[str, int] | None = None
+            try:
+                async for msg in ch.history(limit=75):
+                    # Delete our own housekeeping messages while we're here
+                    if msg.author.id == bot_id:
+                        for emb in msg.embeds:
+                            if (emb.title or "") in _OWN_TITLES:
+                                try:
+                                    await msg.delete()
+                                    cleaned_msgs += 1
+                                except (discord.Forbidden, discord.HTTPException, discord.NotFound):
+                                    pass
+                                break
+                        continue
+
+                    if msg.author.id != opdex_id:
+                        continue
+
+                    # Check for "Incense Active" in spawns-remaining embed (the spawn embed)
+                    for emb in msg.embeds:
+                        desc = emb.description or ""
+                        # The spawn embed shows "Incense Active" with spawns left & time left
+                        inc_active_match = re.search(
+                            r"(\w[\w\s]+?)\s+Incense\b.*?\*\s*(\d+)\s+spawns?\s+left",
+                            desc, re.IGNORECASE | re.DOTALL,
+                        )
+                        if inc_active_match:
+                            raw_type   = inc_active_match.group(1).strip().title()
+                            spawns_rem = int(inc_active_match.group(2))
+                            found_inc  = (raw_type, spawns_rem)
+                            break
+
+                        # Also catch "Incense Activated!" title style
+                        result = _parse_incense_activation(msg)
+                        if result:
+                            found_inc = result
+                            break
+
+                    if found_inc:
+                        break
+
+            except (discord.Forbidden, discord.HTTPException) as e:
+                log.warning(f"resync: can't read #{ch.name}: {e}")
+                continue
+
+            has_db_record = await incense_db.has_active_incense(guild_id, cid)
+
+            if found_inc:
+                inc_type, spawns = found_inc
+                found_active.append(cid)
+                # Upsert DB record
+                await incense_db.register_incense(guild_id, cid, inc_type, spawns)
+                if _is_channel_locked(ch, opdex_id):
+                    await incense_db.set_paused(guild_id, cid, True)
+                    already_locked.append(cid)
+                else:
+                    # Lock it — it was active but wasn't locked (the cracked-incense bug)
+                    success = await _lock_channel(ch, opdex_id)
+                    if success:
+                        await incense_db.set_paused(guild_id, cid, True)
+                        now_locked.append(cid)
+                        await incense_db.log_action(
+                            guild_id, bot_uid, "resync_lock",
+                            f"Resync: locked #{ch.name} ({inc_type}, {spawns} spawns remaining)",
+                        )
+            else:
+                # No active incense found in history
+                if has_db_record:
+                    # DB thought it was active — stale, clear it
+                    await incense_db.clear_incense(guild_id, cid)
+                    cleared_stale.append(cid)
+                # Also unlock if it was left locked with no incense
+                if _is_channel_locked(ch, opdex_id):
+                    await _unlock_channel(ch, opdex_id)
+
+        await incense_db.log_action(
+            guild_id, bot_uid, "resync",
+            (
+                f"Resync complete — found {len(found_active)} active, "
+                f"locked {len(now_locked)}, already_locked {len(already_locked)}, "
+                f"cleared {len(cleared_stale)}, stale_channels {len(stale)}, "
+                f"cleaned_msgs {cleaned_msgs}"
+            ),
+        )
+
+        colour = 0x57F287 if (found_active or cleared_stale) else 0x5865F2
+        embed = discord.Embed(title="🔄 Incense Resync Complete", colour=colour)
+
+        parts = []
+        if found_active:
+            parts.append(f"🌿 **{len(found_active)}** active incense(s) found")
+        if now_locked:
+            parts.append(f"🔒 **{len(now_locked)}** newly locked (were missing locks)")
+        if already_locked:
+            parts.append(f"✅ **{len(already_locked)}** already locked (DB updated)")
+        if cleared_stale:
+            parts.append(f"🗑️ **{len(cleared_stale)}** stale DB record(s) cleared")
+        if stale:
+            parts.append(f"🧹 **{len(stale)}** deleted channel(s) removed")
+        if cleaned_msgs:
+            parts.append(f"💬 **{cleaned_msgs}** old bot message(s) deleted")
+        if not parts:
+            parts.append("Everything looks up-to-date — nothing to fix!")
+
+        embed.description = "\n".join(f"• {p}" for p in parts)
+
+        if now_locked:
+            _add_two_col(embed, f"🔒 Newly Locked ({len(now_locked)})",
+                         [f"<#{c}>" for c in now_locked])
+        if cleared_stale:
+            _add_two_col(embed, f"🗑️ Stale Records Cleared ({len(cleared_stale)})",
+                         [f"<#{c}>" for c in cleared_stale])
+
+        embed.set_footer(text=make_footer(guild_id, "Incense Manager  •  Resync"))
+        await interaction.followup.send(embed=embed)
+
+    # ── /incense group ───────────────────────────────────────────────────────
+
+    group_group = app_commands.Group(
+        name="group",
+        description="Manage named subsets of incense channels.",
+        parent=incense,
+    )
+
+    @group_group.command(name="create", description="Create a named incense group (max 3 per server).")
+    @app_commands.describe(name="Group name (e.g. clan, main, grind)")
+    async def group_create(self, interaction: discord.Interaction, name: str):
+        if not _is_qt_guild(interaction):
+            return await interaction.response.send_message(_NOT_QT_MSG, ephemeral=True)
+        if not await _is_authorised(interaction):
+            return await interaction.response.send_message(
+                "🚫 You need the **Incense Manager** role.", ephemeral=True
+            )
+        gid = str(interaction.guild_id)
+        name = name.strip().lower()
+        if not name or len(name) > 32:
+            return await interaction.response.send_message(
+                "❌ Group name must be 1–32 characters.", ephemeral=True
+            )
+        try:
+            created = await incense_db.create_group(gid, name, str(interaction.user.id))
+        except ValueError as e:
+            return await interaction.response.send_message(f"❌ {e}", ephemeral=True)
+        if not created:
+            return await interaction.response.send_message(
+                f"ℹ️ A group named **{name}** already exists.", ephemeral=True
+            )
+        await incense_db.log_action(gid, str(interaction.user.id), "group_create", f"Created group '{name}'")
+        embed = discord.Embed(
+            title="✅ Group Created",
+            description=(
+                f"Group **{name}** is ready.\n\n"
+                f"Add channels with `/incense group add name:{name} channel:#channel`\n"
+                f"Then use `!p {name}` / `!r {name}` to pause/resume just that group."
+            ),
+            colour=0x57F287,
+        )
+        embed.set_footer(text=make_footer(gid, "Incense Manager"))
+        await interaction.response.send_message(embed=embed)
+
+    @group_group.command(name="delete", description="Delete an incense group (channels stay registered).")
+    @app_commands.describe(name="Group name to delete")
+    async def group_delete(self, interaction: discord.Interaction, name: str):
+        if not _is_qt_guild(interaction):
+            return await interaction.response.send_message(_NOT_QT_MSG, ephemeral=True)
+        if not await _is_authorised(interaction):
+            return await interaction.response.send_message(
+                "🚫 You need the **Incense Manager** role.", ephemeral=True
+            )
+        gid = str(interaction.guild_id)
+        deleted = await incense_db.delete_group(gid, name.strip().lower())
+        if not deleted:
+            return await interaction.response.send_message(
+                f"⚠️ No group named **{name}** found.", ephemeral=True
+            )
+        await incense_db.log_action(gid, str(interaction.user.id), "group_delete", f"Deleted group '{name}'")
+        await interaction.response.send_message(
+            f"🗑️ Group **{name}** deleted. Channels remain registered.", ephemeral=True
+        )
+
+    @group_group.command(name="add", description="Add channels to an incense group.")
+    @app_commands.describe(
+        name="Group name",
+        channel="Channel to add",
+        channel2="Second channel (optional)",
+        channel3="Third channel (optional)",
+    )
+    async def group_add(
+        self,
+        interaction: discord.Interaction,
+        name: str,
+        channel:  discord.TextChannel,
+        channel2: Optional[discord.TextChannel] = None,
+        channel3: Optional[discord.TextChannel] = None,
+    ):
+        if not _is_qt_guild(interaction):
+            return await interaction.response.send_message(_NOT_QT_MSG, ephemeral=True)
+        if not await _is_authorised(interaction):
+            return await interaction.response.send_message(
+                "🚫 You need the **Incense Manager** role.", ephemeral=True
+            )
+        gid = str(interaction.guild_id)
+        gname = name.strip().lower()
+        if not await incense_db.group_exists(gid, gname):
+            return await interaction.response.send_message(
+                f"⚠️ No group named **{gname}**. Create it first with `/incense group create`.",
+                ephemeral=True,
+            )
+        targets = [ch for ch in [channel, channel2, channel3] if ch is not None]
+        cids = [str(ch.id) for ch in targets]
+        added, already = await incense_db.add_channels_to_group(gid, gname, cids)
+        not_registered = [str(ch.id) for ch in targets if str(ch.id) not in added and str(ch.id) not in already]
+
+        embed = discord.Embed(title=f"👥 Group **{gname}** Updated", colour=0x57F287)
+        if added:
+            embed.add_field(name=f"✅ Added ({len(added)})", value="\n".join(f"<#{c}>" for c in added), inline=True)
+        if already:
+            embed.add_field(name=f"⏭️ Already in group ({len(already)})", value="\n".join(f"<#{c}>" for c in already), inline=True)
+        if not_registered:
+            embed.add_field(
+                name=f"⚠️ Not an incense channel ({len(not_registered)})",
+                value="\n".join(f"<#{c}>" for c in not_registered) + "\n*Register first with `/incense add`*",
+                inline=False,
+            )
+        embed.set_footer(text=make_footer(gid, "Incense Manager"))
+        await interaction.response.send_message(embed=embed)
+
+    @group_group.command(name="remove", description="Remove channels from an incense group.")
+    @app_commands.describe(
+        name="Group name",
+        channel="Channel to remove",
+        channel2="Second channel (optional)",
+        channel3="Third channel (optional)",
+    )
+    async def group_remove(
+        self,
+        interaction: discord.Interaction,
+        name: str,
+        channel:  discord.TextChannel,
+        channel2: Optional[discord.TextChannel] = None,
+        channel3: Optional[discord.TextChannel] = None,
+    ):
+        if not _is_qt_guild(interaction):
+            return await interaction.response.send_message(_NOT_QT_MSG, ephemeral=True)
+        if not await _is_authorised(interaction):
+            return await interaction.response.send_message(
+                "🚫 You need the **Incense Manager** role.", ephemeral=True
+            )
+        gid = str(interaction.guild_id)
+        gname = name.strip().lower()
+        targets = [ch for ch in [channel, channel2, channel3] if ch is not None]
+        cids = [str(ch.id) for ch in targets]
+        removed = await incense_db.remove_channels_from_group(gid, gname, cids)
+        not_in_group = [c for c in cids if c not in removed]
+
+        embed = discord.Embed(title=f"👥 Group **{gname}** Updated", colour=0xFEE75C)
+        if removed:
+            embed.add_field(name=f"✅ Removed ({len(removed)})", value="\n".join(f"<#{c}>" for c in removed), inline=True)
+        if not_in_group:
+            embed.add_field(name=f"⏭️ Not in group ({len(not_in_group)})", value="\n".join(f"<#{c}>" for c in not_in_group), inline=True)
+        embed.set_footer(text=make_footer(gid, "Incense Manager"))
+        await interaction.response.send_message(embed=embed)
+
+    @group_group.command(name="list", description="List all incense groups and their channels.")
+    async def group_list(self, interaction: discord.Interaction):
+        if not _is_qt_guild(interaction):
+            return await interaction.response.send_message(_NOT_QT_MSG, ephemeral=True)
+        if not await _is_authorised(interaction):
+            return await interaction.response.send_message(
+                "🚫 You need the **Incense Manager** role.", ephemeral=True
+            )
+        gid = str(interaction.guild_id)
+        groups = await incense_db.get_groups(gid)
+        if not groups:
+            return await interaction.response.send_message(
+                embed=discord.Embed(
+                    title="👥 Incense Groups",
+                    description=(
+                        "No groups yet.\n\n"
+                        "Create one with `/incense group create`, then add channels with `/incense group add`.\n"
+                        "Use `!p <group>` / `!r <group>` to pause/resume just that group."
+                    ),
+                    colour=0x5865F2,
+                ),
+                ephemeral=True,
+            )
+
+        embed = discord.Embed(
+            title="👥 Incense Groups",
+            description=f"**{len(groups)}/{incense_db.MAX_GROUPS_PER_GUILD}** groups defined.",
+            colour=0x5865F2,
+        )
+        for gname in groups:
+            cids = await incense_db.get_group_channels(gid, gname)
+            if cids:
+                cids = _sort_channel_ids(interaction.guild, cids)
+                val = ", ".join(f"<#{c}>" for c in cids[:20])
+                if len(cids) > 20:
+                    val += f" *+{len(cids)-20} more*"
+            else:
+                val = "*No channels yet*"
+            embed.add_field(name=f"**{gname}**  ({len(cids)} ch)", value=val, inline=False)
+
+        embed.set_footer(text=make_footer(gid, f"Tip: !p <group> / !r <group> to target a group"))
+        await interaction.response.send_message(embed=embed)
 
     # ── /incense log ─────────────────────────────────────────────────────────
 
