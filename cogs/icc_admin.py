@@ -17,7 +17,6 @@ All business logic lives in services/icc_*.py.
 """
 
 import logging
-import re
 
 import discord
 from discord import app_commands, Interaction
@@ -305,19 +304,73 @@ class ICCAdmin(commands.Cog):
         await icc_db.delete_category(cat["id"])
         await interaction.response.send_message(f"**{cat['name']}** deleted.", ephemeral=True)
 
-    @cat_group.command(name="add_channels", description="Map channels to a category")
-    @app_commands.describe(category="Category name", channels="Space-separated channel IDs or mentions")
+    @cat_group.command(name="add_channels", description="Map channels to a category — single, whole Discord category, or from/to range")
+    @app_commands.describe(
+        category="ICC category name",
+        channel="A single channel to add",
+        discord_category="Add all text channels in this Discord category",
+        discord_category2="Second Discord category (optional)",
+        discord_category3="Third Discord category (optional)",
+        from_channel="Start of a channel range (inclusive)",
+        to_channel="End of a channel range (inclusive)",
+    )
     @app_commands.autocomplete(category=_category_autocomplete)
-    async def category_add_channels(self, interaction: Interaction, category: str, channels: str):
+    async def category_add_channels(
+        self,
+        interaction: Interaction,
+        category: str,
+        channel:           discord.TextChannel | None = None,
+        discord_category:  discord.CategoryChannel | None = None,
+        discord_category2: discord.CategoryChannel | None = None,
+        discord_category3: discord.CategoryChannel | None = None,
+        from_channel:      discord.TextChannel | None = None,
+        to_channel:        discord.TextChannel | None = None,
+    ):
         if not await is_icc_admin(interaction):
             return await interaction.response.send_message("You need ICC admin permissions.", ephemeral=True)
         guild_id = str(interaction.guild_id)
         cat = await icc_db.get_category_by_name(guild_id, category)
         if not cat:
             return await interaction.response.send_message(f"**{category}** not found.", ephemeral=True)
-        raw = re.findall(r"\d+", channels)
-        if not raw:
-            return await interaction.response.send_message("No valid channel IDs found.", ephemeral=True)
+
+        targets: list[discord.TextChannel] = []
+        if channel:
+            targets.append(channel)
+        for dc in [discord_category, discord_category2, discord_category3]:
+            if dc:
+                targets.extend(ch for ch in dc.channels if isinstance(ch, discord.TextChannel) and ch not in targets)
+        if from_channel and to_channel:
+            dc = from_channel.category
+            pool = sorted(
+                [ch for ch in interaction.guild.text_channels if ch.category == dc],
+                key=lambda c: c.position,
+            )
+            try:
+                si = next(i for i, c in enumerate(pool) if c.id == from_channel.id)
+                ei = next(i for i, c in enumerate(pool) if c.id == to_channel.id)
+            except StopIteration:
+                return await interaction.response.send_message(
+                    "❌ Could not resolve range — ensure both channels are in the same Discord category.", ephemeral=True
+                )
+            if si > ei:
+                si, ei = ei, si
+            for ch in pool[si:ei + 1]:
+                if ch not in targets:
+                    targets.append(ch)
+        elif from_channel or to_channel:
+            return await interaction.response.send_message(
+                "⚠️ Provide **both** `from_channel` and `to_channel` for a range.", ephemeral=True
+            )
+
+        if not targets:
+            return await interaction.response.send_message(
+                "⚠️ No channels specified. Provide `channel`, `discord_category`, or `from_channel`+`to_channel`.",
+                ephemeral=True,
+            )
+
+        seen: set[int] = set()
+        unique = [ch for ch in targets if not (ch.id in seen or seen.add(ch.id))]
+        raw = [str(ch.id) for ch in unique]
         added, already = await icc_db.add_category_channels(cat["id"], guild_id, raw)
         parts = []
         if added:
@@ -326,19 +379,73 @@ class ICCAdmin(commands.Cog):
             parts.append(f"{len(already)} already mapped")
         await interaction.response.send_message(f"**{cat['name']}**: {' / '.join(parts)}.", ephemeral=True)
 
-    @cat_group.command(name="remove_channels", description="Unmap channels from a category")
-    @app_commands.describe(category="Category name", channels="Space-separated channel IDs or mentions")
+    @cat_group.command(name="remove_channels", description="Unmap channels from a category — single, whole Discord category, or from/to range")
+    @app_commands.describe(
+        category="ICC category name",
+        channel="A single channel to remove",
+        discord_category="Remove all text channels in this Discord category",
+        discord_category2="Second Discord category (optional)",
+        discord_category3="Third Discord category (optional)",
+        from_channel="Start of a channel range (inclusive)",
+        to_channel="End of a channel range (inclusive)",
+    )
     @app_commands.autocomplete(category=_category_autocomplete)
-    async def category_remove_channels(self, interaction: Interaction, category: str, channels: str):
+    async def category_remove_channels(
+        self,
+        interaction: Interaction,
+        category: str,
+        channel:           discord.TextChannel | None = None,
+        discord_category:  discord.CategoryChannel | None = None,
+        discord_category2: discord.CategoryChannel | None = None,
+        discord_category3: discord.CategoryChannel | None = None,
+        from_channel:      discord.TextChannel | None = None,
+        to_channel:        discord.TextChannel | None = None,
+    ):
         if not await is_icc_admin(interaction):
             return await interaction.response.send_message("You need ICC admin permissions.", ephemeral=True)
         guild_id = str(interaction.guild_id)
         cat = await icc_db.get_category_by_name(guild_id, category)
         if not cat:
             return await interaction.response.send_message(f"**{category}** not found.", ephemeral=True)
-        raw = re.findall(r"\d+", channels)
-        if not raw:
-            return await interaction.response.send_message("No valid channel IDs found.", ephemeral=True)
+
+        targets: list[discord.TextChannel] = []
+        if channel:
+            targets.append(channel)
+        for dc in [discord_category, discord_category2, discord_category3]:
+            if dc:
+                targets.extend(ch for ch in dc.channels if isinstance(ch, discord.TextChannel) and ch not in targets)
+        if from_channel and to_channel:
+            dc = from_channel.category
+            pool = sorted(
+                [ch for ch in interaction.guild.text_channels if ch.category == dc],
+                key=lambda c: c.position,
+            )
+            try:
+                si = next(i for i, c in enumerate(pool) if c.id == from_channel.id)
+                ei = next(i for i, c in enumerate(pool) if c.id == to_channel.id)
+            except StopIteration:
+                return await interaction.response.send_message(
+                    "❌ Could not resolve range — ensure both channels are in the same Discord category.", ephemeral=True
+                )
+            if si > ei:
+                si, ei = ei, si
+            for ch in pool[si:ei + 1]:
+                if ch not in targets:
+                    targets.append(ch)
+        elif from_channel or to_channel:
+            return await interaction.response.send_message(
+                "⚠️ Provide **both** `from_channel` and `to_channel` for a range.", ephemeral=True
+            )
+
+        if not targets:
+            return await interaction.response.send_message(
+                "⚠️ No channels specified. Provide `channel`, `discord_category`, or `from_channel`+`to_channel`.",
+                ephemeral=True,
+            )
+
+        seen: set[int] = set()
+        unique = [ch for ch in targets if not (ch.id in seen or seen.add(ch.id))]
+        raw = [str(ch.id) for ch in unique]
         removed, not_found = await icc_db.remove_category_channels(cat["id"], guild_id, raw)
         parts = []
         if removed:
