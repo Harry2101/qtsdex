@@ -1903,6 +1903,18 @@ class IncenseCog(commands.Cog):
         parent=incense,
     )
 
+    async def _group_name_autocomplete(
+        self,
+        interaction: discord.Interaction,
+        current: str,
+    ) -> list[app_commands.Choice[str]]:
+        gid = str(interaction.guild_id or "")
+        groups = await incense_db.get_groups(gid)
+        return [
+            app_commands.Choice(name=g, value=g)
+            for g in groups if current.lower() in g.lower()
+        ][:25]
+
     @group_group.command(name="create", description="Create a named incense group (max 3 per server).")
     @app_commands.describe(name="Group name (e.g. clan, main, grind)")
     async def group_create(self, interaction: discord.Interaction, name: str):
@@ -1941,6 +1953,7 @@ class IncenseCog(commands.Cog):
 
     @group_group.command(name="delete", description="Delete an incense group (channels stay registered).")
     @app_commands.describe(name="Group name to delete")
+    @app_commands.autocomplete(name=_group_name_autocomplete)
     async def group_delete(self, interaction: discord.Interaction, name: str):
         if not _is_qt_guild(interaction):
             return await interaction.response.send_message(_NOT_QT_MSG, ephemeral=True)
@@ -1960,6 +1973,7 @@ class IncenseCog(commands.Cog):
         )
 
     @group_group.command(name="add", description="Add channels to an incense group.")
+    @app_commands.autocomplete(name=_group_name_autocomplete)
     @app_commands.describe(
         name="Group name",
         channel="A single channel to add",
@@ -2049,6 +2063,7 @@ class IncenseCog(commands.Cog):
         await interaction.response.send_message(embed=embed)
 
     @group_group.command(name="remove", description="Remove channels from an incense group.")
+    @app_commands.autocomplete(name=_group_name_autocomplete)
     @app_commands.describe(
         name="Group name",
         channel="A single channel to remove",
