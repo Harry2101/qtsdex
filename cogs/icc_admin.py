@@ -87,7 +87,7 @@ async def build_org_embed(org: dict, guild_id: str) -> discord.Embed:
     }.get(org["status"], 0x5865F2)
 
     embed = discord.Embed(
-        title=f"ICC — {label}",
+        title=f"Org — {label}",
         description="\n\n".join(lines) if lines else "No categories.",
         colour=colour,
     )
@@ -98,7 +98,7 @@ async def build_org_embed(org: dict, guild_id: str) -> discord.Embed:
     if org["status"] == "published":
         embed.set_footer(text=make_footer(guild_id, "Use /icc claim <category> to claim"))
     else:
-        embed.set_footer(text=make_footer(guild_id, f"ICC • {org['status'].title()}"))
+        embed.set_footer(text=make_footer(guild_id, f"Org • {org['status'].title()}"))
     return embed
 
 
@@ -126,7 +126,7 @@ class ICCAdmin(commands.Cog):
     # ── Group tree ───────────────────────────────────────────────────────────
 
     icc = app_commands.Group(name="org", description="Incense Control Center")
-    setup_group = app_commands.Group(name="setup", description="ICC setup", parent=icc)
+    setup_group = app_commands.Group(name="setup", description="Org setup", parent=icc)
     cat_group = app_commands.Group(name="category", description="Manage categories", parent=icc)
     adm_group = app_commands.Group(name="admin", description="Admin overrides", parent=icc)
     reserve_group = app_commands.Group(name="reserve", description="Reserve Pokemon picks", parent=icc)
@@ -201,28 +201,28 @@ class ICCAdmin(commands.Cog):
 
     # ━━ /icc setup ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-    @setup_group.command(name="admin_role", description="Set the ICC admin role")
-    @app_commands.describe(role="Role that can manage ICC")
+    @setup_group.command(name="admin_role", description="Set the Org admin role")
+    @app_commands.describe(role="Role that can manage Org")
     async def setup_admin_role(self, interaction: Interaction, role: discord.Role):
         if not await is_icc_admin(interaction):
-            return await interaction.response.send_message("You need ICC admin permissions.", ephemeral=True)
+            return await interaction.response.send_message("You need Org admin permissions.", ephemeral=True)
         await guild_settings_db.set_val(str(interaction.guild_id), "icc_admin_role", str(role.id))
-        await interaction.response.send_message(f"ICC admin role set to {role.mention}.", ephemeral=True)
+        await interaction.response.send_message(f"Org admin role set to {role.mention}.", ephemeral=True)
 
-    @setup_group.command(name="organizer_role", description="Set the ICC organizer role")
+    @setup_group.command(name="organizer_role", description="Set the Org organizer role")
     @app_commands.describe(role="Role that can create/publish orgs")
     async def setup_organizer_role(self, interaction: Interaction, role: discord.Role):
         if not await is_icc_admin(interaction):
-            return await interaction.response.send_message("You need ICC admin permissions.", ephemeral=True)
+            return await interaction.response.send_message("You need Org admin permissions.", ephemeral=True)
         await guild_settings_db.set_val(str(interaction.guild_id), "icc_organizer_role", str(role.id))
-        await interaction.response.send_message(f"ICC organizer role set to {role.mention}.", ephemeral=True)
+        await interaction.response.send_message(f"Org organizer role set to {role.mention}.", ephemeral=True)
 
     @setup_group.command(name="helper_role", description="Set helper escalation role for a category")
     @app_commands.describe(category="Category name", role="Role to ping when unclaimed")
     @app_commands.autocomplete(category=_category_autocomplete)
     async def setup_helper_role(self, interaction: Interaction, category: str, role: discord.Role):
         if not await is_icc_admin(interaction):
-            return await interaction.response.send_message("You need ICC admin permissions.", ephemeral=True)
+            return await interaction.response.send_message("You need Org admin permissions.", ephemeral=True)
         cat = await icc_db.get_category_by_name(str(interaction.guild_id), category)
         if not cat:
             return await interaction.response.send_message(f"Category **{category}** not found.", ephemeral=True)
@@ -236,7 +236,7 @@ class ICCAdmin(commands.Cog):
     @cat_group.command(name="list", description="Show all configured categories")
     async def category_list(self, interaction: Interaction):
         if not await is_icc_admin(interaction):
-            return await interaction.response.send_message("You need ICC admin permissions.", ephemeral=True)
+            return await interaction.response.send_message("You need Org admin permissions.", ephemeral=True)
         guild_id = str(interaction.guild_id)
         cats = await icc_db.get_categories(guild_id, include_inactive=True)
         if not cats:
@@ -254,9 +254,9 @@ class ICCAdmin(commands.Cog):
             )
 
         embed = discord.Embed(
-            title="ICC Categories", description="\n".join(lines), colour=0x5865F2,
+            title="Org Categories", description="\n".join(lines), colour=0x5865F2,
         )
-        embed.set_footer(text=make_footer(guild_id, "ICC"))
+        embed.set_footer(text=make_footer(guild_id, "Org"))
         await interaction.response.send_message(embed=embed, ephemeral=True)
 
     @cat_group.command(name="create", description="Create a new category")
@@ -269,7 +269,7 @@ class ICCAdmin(commands.Cog):
         coin_value: int = 0,
     ):
         if not await is_icc_admin(interaction):
-            return await interaction.response.send_message("You need ICC admin permissions.", ephemeral=True)
+            return await interaction.response.send_message("You need Org admin permissions.", ephemeral=True)
         cat_id = await icc_db.create_category(
             str(interaction.guild_id), name, required_count, coin_value,
         )
@@ -291,7 +291,7 @@ class ICCAdmin(commands.Cog):
         reserve_slots: int | None = None,
     ):
         if not await is_icc_admin(interaction):
-            return await interaction.response.send_message("You need ICC admin permissions.", ephemeral=True)
+            return await interaction.response.send_message("You need Org admin permissions.", ephemeral=True)
         cat = await icc_db.get_category_by_name(str(interaction.guild_id), category)
         if not cat:
             return await interaction.response.send_message(f"**{category}** not found.", ephemeral=True)
@@ -308,7 +308,7 @@ class ICCAdmin(commands.Cog):
     @app_commands.autocomplete(category=_category_autocomplete)
     async def category_delete(self, interaction: Interaction, category: str):
         if not await is_icc_admin(interaction):
-            return await interaction.response.send_message("You need ICC admin permissions.", ephemeral=True)
+            return await interaction.response.send_message("You need Org admin permissions.", ephemeral=True)
         cat = await icc_db.get_category_by_name(str(interaction.guild_id), category)
         if not cat:
             return await interaction.response.send_message(f"**{category}** not found.", ephemeral=True)
@@ -317,7 +317,7 @@ class ICCAdmin(commands.Cog):
 
     @cat_group.command(name="add_channels", description="Map channels to a category — single, whole Discord category, or from/to range")
     @app_commands.describe(
-        category="ICC category name",
+        category="Org category name",
         channel="A single channel to add",
         discord_category="Add all text channels in this Discord category",
         discord_category2="Second Discord category (optional)",
@@ -338,7 +338,7 @@ class ICCAdmin(commands.Cog):
         to_channel:        discord.TextChannel | None = None,
     ):
         if not await is_icc_admin(interaction):
-            return await interaction.response.send_message("You need ICC admin permissions.", ephemeral=True)
+            return await interaction.response.send_message("You need Org admin permissions.", ephemeral=True)
         guild_id = str(interaction.guild_id)
         cat = await icc_db.get_category_by_name(guild_id, category)
         if not cat:
@@ -392,7 +392,7 @@ class ICCAdmin(commands.Cog):
 
     @cat_group.command(name="remove_channels", description="Unmap channels from a category — single, whole Discord category, or from/to range")
     @app_commands.describe(
-        category="ICC category name",
+        category="Org category name",
         channel="A single channel to remove",
         discord_category="Remove all text channels in this Discord category",
         discord_category2="Second Discord category (optional)",
@@ -413,7 +413,7 @@ class ICCAdmin(commands.Cog):
         to_channel:        discord.TextChannel | None = None,
     ):
         if not await is_icc_admin(interaction):
-            return await interaction.response.send_message("You need ICC admin permissions.", ephemeral=True)
+            return await interaction.response.send_message("You need Org admin permissions.", ephemeral=True)
         guild_id = str(interaction.guild_id)
         cat = await icc_db.get_category_by_name(guild_id, category)
         if not cat:
@@ -470,7 +470,7 @@ class ICCAdmin(commands.Cog):
     @app_commands.autocomplete(category=_category_autocomplete)
     async def category_view(self, interaction: Interaction, category: str):
         if not await is_icc_admin(interaction):
-            return await interaction.response.send_message("You need ICC admin permissions.", ephemeral=True)
+            return await interaction.response.send_message("You need Org admin permissions.", ephemeral=True)
         guild_id = str(interaction.guild_id)
         cat = await icc_db.get_category_by_name(guild_id, category)
         if not cat:
@@ -480,7 +480,7 @@ class ICCAdmin(commands.Cog):
         active_str = "" if cat["active"] else "\n**[INACTIVE]**"
         mentions = " ".join(f"<#{c}>" for c in ch_ids) if ch_ids else "No channels mapped."
         embed = discord.Embed(
-            title=f"ICC — {cat['name']}",
+            title=f"Org — {cat['name']}",
             description=(
                 f"**Required:** {cat['required_count']} channels\n"
                 f"**Coins:** {cat['coin_value']:,}{helper}{active_str}\n\n"
@@ -488,7 +488,7 @@ class ICCAdmin(commands.Cog):
             ),
             colour=0x5865F2,
         )
-        embed.set_footer(text=make_footer(guild_id, "ICC"))
+        embed.set_footer(text=make_footer(guild_id, "Org"))
         await interaction.response.send_message(embed=embed, ephemeral=True)
 
     # ━━ /icc admin ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -498,7 +498,7 @@ class ICCAdmin(commands.Cog):
     @app_commands.autocomplete(category=_category_autocomplete)
     async def admin_mark_complete(self, interaction: Interaction, category: str):
         if not await is_icc_admin(interaction):
-            return await interaction.response.send_message("You need ICC admin permissions.", ephemeral=True)
+            return await interaction.response.send_message("You need Org admin permissions.", ephemeral=True)
         ok, msg = await admin_force_complete(str(interaction.guild_id), str(interaction.user.id), category)
         await interaction.response.send_message(msg, ephemeral=True)
 
@@ -507,14 +507,14 @@ class ICCAdmin(commands.Cog):
     @app_commands.autocomplete(category=_category_autocomplete)
     async def admin_reset_cat(self, interaction: Interaction, category: str):
         if not await is_icc_admin(interaction):
-            return await interaction.response.send_message("You need ICC admin permissions.", ephemeral=True)
+            return await interaction.response.send_message("You need Org admin permissions.", ephemeral=True)
         ok, msg = await admin_reset_category(str(interaction.guild_id), str(interaction.user.id), category)
         await interaction.response.send_message(msg, ephemeral=True)
 
     @adm_group.command(name="timer_status", description="Show pending timers")
     async def admin_timer_status(self, interaction: Interaction):
         if not await is_icc_admin(interaction):
-            return await interaction.response.send_message("You need ICC admin permissions.", ephemeral=True)
+            return await interaction.response.send_message("You need Org admin permissions.", ephemeral=True)
         guild_id = str(interaction.guild_id)
         org = await icc_db.get_active_org(guild_id)
         if not org:
@@ -528,28 +528,28 @@ class ICCAdmin(commands.Cog):
             cat_name = oc["name"] if oc else "?"
             lines.append(f"ID {t['id']} | `{t['timer_type']}` | **{cat_name}** | fires `{t['fire_at']}`")
         embed = discord.Embed(
-            title="ICC Pending Timers", description="\n".join(lines[:30]), colour=0x5865F2,
+            title="Org Pending Timers", description="\n".join(lines[:30]), colour=0x5865F2,
         )
-        embed.set_footer(text=make_footer(guild_id, "ICC"))
+        embed.set_footer(text=make_footer(guild_id, "Org"))
         await interaction.response.send_message(embed=embed, ephemeral=True)
 
     @adm_group.command(name="cancel_timer", description="Cancel a timer by ID")
     @app_commands.describe(timer_id="Timer ID")
     async def admin_cancel_timer(self, interaction: Interaction, timer_id: int):
         if not await is_icc_admin(interaction):
-            return await interaction.response.send_message("You need ICC admin permissions.", ephemeral=True)
+            return await interaction.response.send_message("You need Org admin permissions.", ephemeral=True)
         ok = await icc_db.cancel_timer_by_id(timer_id)
         msg = f"Timer {timer_id} cancelled." if ok else f"Timer {timer_id} not found or already handled."
         await interaction.response.send_message(msg, ephemeral=True)
 
-    @adm_group.command(name="audit", description="View ICC audit log")
+    @adm_group.command(name="audit", description="View Org audit log")
     @app_commands.describe(user="Filter by user", limit="Entries (default 20)")
     async def admin_audit(
         self, interaction: Interaction,
         user: discord.Member | None = None, limit: int = 20,
     ):
         if not await is_icc_admin(interaction):
-            return await interaction.response.send_message("You need ICC admin permissions.", ephemeral=True)
+            return await interaction.response.send_message("You need Org admin permissions.", ephemeral=True)
         guild_id = str(interaction.guild_id)
         entries = await icc_db.get_audit_log(guild_id, limit=limit, user_id=str(user.id) if user else None)
         if not entries:
@@ -559,9 +559,9 @@ class ICCAdmin(commands.Cog):
             for e in entries
         ]
         embed = discord.Embed(
-            title="ICC Audit Log", description="\n".join(lines[:25]), colour=0x5865F2,
+            title="Org Audit Log", description="\n".join(lines[:25]), colour=0x5865F2,
         )
-        embed.set_footer(text=make_footer(guild_id, "ICC"))
+        embed.set_footer(text=make_footer(guild_id, "Org"))
         await interaction.response.send_message(embed=embed, ephemeral=True)
 
 
@@ -588,7 +588,7 @@ class ICCAdmin(commands.Cog):
     @app_commands.autocomplete(category=_category_autocomplete)
     async def icc_assign(self, interaction: Interaction, category: str, user: discord.Member):
         if not await is_icc_admin(interaction):
-            return await interaction.response.send_message("You need ICC admin permissions.", ephemeral=True)
+            return await interaction.response.send_message("You need Org admin permissions.", ephemeral=True)
         guild_id = str(interaction.guild_id)
         ok, msg = await admin_assign(guild_id, str(interaction.user.id), category, str(user.id))
         await interaction.response.send_message(msg, ephemeral=True)
@@ -598,7 +598,7 @@ class ICCAdmin(commands.Cog):
     @app_commands.autocomplete(category=_category_autocomplete)
     async def icc_drop(self, interaction: Interaction, category: str):
         if not await is_icc_admin(interaction):
-            return await interaction.response.send_message("You need ICC admin permissions.", ephemeral=True)
+            return await interaction.response.send_message("You need Org admin permissions.", ephemeral=True)
         guild_id = str(interaction.guild_id)
         ok, msg = await admin_drop(guild_id, str(interaction.user.id), category)
         await interaction.response.send_message(msg, ephemeral=True)
@@ -664,9 +664,9 @@ class ICCAdmin(commands.Cog):
             lines.append(line)
 
         embed = discord.Embed(
-            title="ICC Progress", description="\n\n".join(lines), colour=0x5865F2,
+            title="Org Progress", description="\n\n".join(lines), colour=0x5865F2,
         )
-        embed.set_footer(text=make_footer(guild_id, "ICC"))
+        embed.set_footer(text=make_footer(guild_id, "Org"))
         await interaction.response.send_message(embed=embed, ephemeral=True)
 
     # ━━ /icc reserve pick / release / list ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -789,9 +789,9 @@ class ICCAdmin(commands.Cog):
             lines.append(f"**{label}** — {status} — started {started}")
 
         embed = discord.Embed(
-            title="ICC History", description="\n".join(lines), colour=0x5865F2,
+            title="Org History", description="\n".join(lines), colour=0x5865F2,
         )
-        embed.set_footer(text=make_footer(guild_id, "ICC"))
+        embed.set_footer(text=make_footer(guild_id, "Org"))
         await interaction.response.send_message(embed=embed, ephemeral=True)
 
 

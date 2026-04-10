@@ -369,65 +369,65 @@ def _section_duels(gid: str) -> tuple[str, str, discord.Embed]:
 
 def _section_icc(gid: str) -> tuple[str, str, discord.Embed]:
     embed = discord.Embed(
-        title="🧪  Incense Control Center (ICC)  *(organizer/admin)*",
+        title="🧪  Org  *(organizer/admin)*",
         colour=0x57F287,
     )
     embed.add_field(
         name="Org lifecycle",
         value=(
-            "`/icc start [label]`  — Create a draft org (invisible until published)\n"
-            "`/icc publish`  — Go live: post announcement, open claims, start timers\n"
-            "`/icc status [org_id]`  — Full dashboard: owners, progress, status\n"
-            "`/icc cancel [reason]`  — Cancel active or draft org\n"
-            "`/icc history [limit]`  — View past completed/cancelled orgs"
+            "`/org start [label]`  — Create a draft org (invisible until published)\n"
+            "`/org publish`  — Go live: post announcement, open claims, start timers\n"
+            "`/org status [org_id]`  — Full dashboard: owners, progress, status\n"
+            "`/org cancel [reason]`  — Cancel active or draft org\n"
+            "`/org history [limit]`  — View past completed/cancelled orgs"
         ),
         inline=False,
     )
     embed.add_field(
         name="Claiming  *(anyone)*",
         value=(
-            "`/icc claim <category>`  — FCFS-claim an unclaimed category\n"
-            "`/icc unclaim <category>`  — Release your claim (before any progress)\n"
-            "`/icc progress [category]`  — Progress bars + missing channels\n"
-            "`/icc mark_bought <channel>`  — Manually mark a channel as bought"
+            "`/org claim <category>`  — FCFS-claim an unclaimed category\n"
+            "`/org unclaim <category>`  — Release your claim (before any progress)\n"
+            "`/org progress [category]`  — Progress bars + missing channels\n"
+            "`/org mark_bought <channel>`  — Manually mark a channel as bought"
         ),
         inline=False,
     )
     embed.add_field(
         name="Reserves  *(buyers)*",
         value=(
-            "`/icc reserve pick <pokemon>`  — Reserve a Pokémon for your category slot (FCFS across whole org)\n"
+            "`/org reserve pick <pokemon>`  — Reserve a Pokémon for your category slot (FCFS across whole org)\n"
             "   ↳ Autocomplete shows eligible Pokémon from normal + event lists\n"
             "   ↳ Reserving e.g. *Vivillon* covers **all** Vivillon forms automatically\n"
             "   ↳ Reserves **lock** when the org is published — no new picks after that\n"
-            "`/icc reserve release <pokemon>`  — Free your reserve (no ping, no steal detection)\n"
-            "`/icc reserve list [user]`  — See your current reserves (admins can check any user)"
+            "`/org reserve release <pokemon>`  — Free your reserve (no ping, no steal detection)\n"
+            "`/org reserve list [user]`  — See your current reserves (admins can check any user)"
         ),
         inline=False,
     )
     embed.add_field(
         name="Admin overrides",
         value=(
-            "`/icc assign <category> <user>`  — Force-assign a category\n"
-            "`/icc drop <category>`  — Force category back to unclaimed\n"
-            "`/icc admin mark_complete <category>`  — Force-complete a category\n"
-            "`/icc admin reset_category <category>`  — Wipe progress and unclaim\n"
-            "`/icc admin timer_status`  — View pending escalation/reminder timers\n"
-            "`/icc admin cancel_timer <id>`  — Cancel a specific timer\n"
-            "`/icc admin audit [user]`  — View ICC action log"
+            "`/org assign <category> <user>`  — Force-assign a category\n"
+            "`/org drop <category>`  — Force category back to unclaimed\n"
+            "`/org admin mark_complete <category>`  — Force-complete a category\n"
+            "`/org admin reset_category <category>`  — Wipe progress and unclaim\n"
+            "`/org admin timer_status`  — View pending escalation/reminder timers\n"
+            "`/org admin cancel_timer <id>`  — Cancel a specific timer\n"
+            "`/org admin audit [user]`  — View Org action log"
         ),
         inline=False,
     )
     embed.add_field(
         name="Setup & categories  *(admin only)*",
         value=(
-            "`/icc setup admin_role <role>`  — Set ICC admin role\n"
-            "`/icc setup organizer_role <role>`  — Set org creator role\n"
-            "`/icc setup helper_role <category> <role>`  — Set escalation role per category\n"
-            "`/icc category create <name> <count> [coins]`  — Create a category\n"
-            "`/icc category edit <category> [count] [coins] [reserve_slots]`  — Edit a category\n"
-            "`/icc category delete/list/view`  — Manage categories\n"
-            "`/icc category add_channels / remove_channels`  — Map channels to categories"
+            "`/org setup admin_role <role>`  — Set Org admin role\n"
+            "`/org setup organizer_role <role>`  — Set org creator role\n"
+            "`/org setup helper_role <category> <role>`  — Set escalation role per category\n"
+            "`/org category create <name> <count> [coins]`  — Create a category\n"
+            "`/org category edit <category> [count] [coins] [reserve_slots]`  — Edit a category\n"
+            "`/org category delete/list/view`  — Manage categories\n"
+            "`/org category add_channels / remove_channels`  — Map channels to categories"
         ),
         inline=False,
     )
@@ -443,15 +443,15 @@ def _section_icc(gid: str) -> tuple[str, str, discord.Embed]:
         ),
         inline=False,
     )
-    embed.set_footer(text=make_footer(gid, "ICC"))
-    return ("🧪", "Incense Control Center", embed)
+    embed.set_footer(text=make_footer(gid, "Org"))
+    return ("🧪", "Org", embed)
 
 
 def _section_pokemon_lists(gid: str) -> tuple[str, str, discord.Embed]:
     embed = discord.Embed(
         title="📋  Pokémon Lists  *(admin only)*",
         description=(
-            "Manage the master Pokémon lists used by ICC for reserve eligibility and spawn matching.\n"
+            "Manage the master Pokémon lists used by Org for reserve eligibility and spawn matching.\n"
             "Categories: **rare · gmax · eevo · regional** (anything else = **normal**).\n"
             "Adding a Pokémon auto-fetches **all its forms** from PokéAPI."
         ),
@@ -480,10 +480,10 @@ def _section_pokemon_lists(gid: str) -> tuple[str, str, discord.Embed]:
         inline=False,
     )
     embed.add_field(
-        name="How lists affect ICC",
+        name="How lists affect Org",
         value=(
             "• **rare / gmax / eevo / regional** → not reservable; tracked for spawn identification\n"
-            "• **normal** → eligible for `/icc reserve pick` (anything not in the above 4)\n"
+            "• **normal** → eligible for `/org reserve pick` (anything not in the above 4)\n"
             "• **event** Pokémon → also reservable; matched by exact name (no form grouping)\n"
             "• Spawn names not found in **any** list → bot owner is DMed to flag it"
         ),

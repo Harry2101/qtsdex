@@ -133,7 +133,7 @@ class PokemonListCog(commands.Cog):
 
     # -- Group tree -----------------------------------------------------------
 
-    plist = app_commands.Group(name="pokemon_list", description="Manage Pokemon lists for ICC")
+    plist = app_commands.Group(name="pokemon_list", description="Manage Pokemon lists for Org")
     event_group = app_commands.Group(name="event", description="Manage Pokemon events", parent=plist)
 
     # -- /pokemon_list add ---------------------------------------------------
@@ -146,7 +146,7 @@ class PokemonListCog(commands.Cog):
     @app_commands.autocomplete(category=_category_type_autocomplete)
     async def plist_add(self, interaction: Interaction, category: str, name: str):
         if not await is_icc_admin(interaction):
-            return await interaction.response.send_message("You need ICC admin permissions.", ephemeral=True)
+            return await interaction.response.send_message("You need Org admin permissions.", ephemeral=True)
         if category not in pokemon_list_db.CATEGORY_TYPES:
             return await interaction.response.send_message(
                 f"Invalid category. Use one of: {', '.join(pokemon_list_db.CATEGORY_TYPES)}", ephemeral=True,
@@ -180,7 +180,7 @@ class PokemonListCog(commands.Cog):
     @app_commands.autocomplete(name=_pokemon_autocomplete)
     async def plist_remove(self, interaction: Interaction, name: str):
         if not await is_icc_admin(interaction):
-            return await interaction.response.send_message("You need ICC admin permissions.", ephemeral=True)
+            return await interaction.response.send_message("You need Org admin permissions.", ephemeral=True)
         count = await pokemon_list_db.remove_pokemon(name)
         if count == 0:
             return await interaction.response.send_message(f"**{name}** not found in any list.", ephemeral=True)
@@ -193,7 +193,7 @@ class PokemonListCog(commands.Cog):
     @app_commands.autocomplete(category=_category_type_autocomplete)
     async def plist_view(self, interaction: Interaction, category: str):
         if not await is_icc_admin(interaction):
-            return await interaction.response.send_message("You need ICC admin permissions.", ephemeral=True)
+            return await interaction.response.send_message("You need Org admin permissions.", ephemeral=True)
         if category not in pokemon_list_db.CATEGORY_TYPES:
             return await interaction.response.send_message("Invalid category type.", ephemeral=True)
 
@@ -232,7 +232,7 @@ class PokemonListCog(commands.Cog):
     @app_commands.describe(name="Event name (e.g. Valentine's 2025)")
     async def event_create(self, interaction: Interaction, name: str):
         if not await is_icc_admin(interaction):
-            return await interaction.response.send_message("You need ICC admin permissions.", ephemeral=True)
+            return await interaction.response.send_message("You need Org admin permissions.", ephemeral=True)
         eid = await pokemon_list_db.create_event(name)
         if eid is None:
             return await interaction.response.send_message(f"Event **{name}** already exists.", ephemeral=True)
@@ -245,7 +245,7 @@ class PokemonListCog(commands.Cog):
     @app_commands.autocomplete(event=_event_autocomplete)
     async def event_delete(self, interaction: Interaction, event: str):
         if not await is_icc_admin(interaction):
-            return await interaction.response.send_message("You need ICC admin permissions.", ephemeral=True)
+            return await interaction.response.send_message("You need Org admin permissions.", ephemeral=True)
         ok = await pokemon_list_db.delete_event(event)
         if not ok:
             return await interaction.response.send_message(f"Event **{event}** not found.", ephemeral=True)
@@ -258,7 +258,7 @@ class PokemonListCog(commands.Cog):
     @app_commands.autocomplete(event=_event_autocomplete)
     async def event_add(self, interaction: Interaction, event: str, pokemon: str):
         if not await is_icc_admin(interaction):
-            return await interaction.response.send_message("You need ICC admin permissions.", ephemeral=True)
+            return await interaction.response.send_message("You need Org admin permissions.", ephemeral=True)
         ev = await pokemon_list_db.get_event(event)
         if not ev:
             return await interaction.response.send_message(f"Event **{event}** not found.", ephemeral=True)
@@ -274,7 +274,7 @@ class PokemonListCog(commands.Cog):
     @app_commands.autocomplete(event=_event_autocomplete, pokemon=_event_entry_autocomplete)
     async def event_remove(self, interaction: Interaction, event: str, pokemon: str):
         if not await is_icc_admin(interaction):
-            return await interaction.response.send_message("You need ICC admin permissions.", ephemeral=True)
+            return await interaction.response.send_message("You need Org admin permissions.", ephemeral=True)
         ev = await pokemon_list_db.get_event(event)
         if not ev:
             return await interaction.response.send_message(f"Event **{event}** not found.", ephemeral=True)
@@ -290,7 +290,7 @@ class PokemonListCog(commands.Cog):
     @app_commands.autocomplete(event=_event_autocomplete)
     async def event_view(self, interaction: Interaction, event: str):
         if not await is_icc_admin(interaction):
-            return await interaction.response.send_message("You need ICC admin permissions.", ephemeral=True)
+            return await interaction.response.send_message("You need Org admin permissions.", ephemeral=True)
         ev = await pokemon_list_db.get_event(event)
         if not ev:
             return await interaction.response.send_message(f"Event **{event}** not found.", ephemeral=True)
@@ -313,7 +313,7 @@ class PokemonListCog(commands.Cog):
     @event_group.command(name="list", description="List all events")
     async def event_list(self, interaction: Interaction):
         if not await is_icc_admin(interaction):
-            return await interaction.response.send_message("You need ICC admin permissions.", ephemeral=True)
+            return await interaction.response.send_message("You need Org admin permissions.", ephemeral=True)
         events = await pokemon_list_db.get_all_events()
         if not events:
             return await interaction.response.send_message("No events configured.", ephemeral=True)
