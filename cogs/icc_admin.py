@@ -125,7 +125,7 @@ class ICCAdmin(commands.Cog):
 
     # ── Group tree ───────────────────────────────────────────────────────────
 
-    icc = app_commands.Group(name="icc", description="Incense Control Center")
+    icc = app_commands.Group(name="org", description="Incense Control Center")
     setup_group = app_commands.Group(name="setup", description="ICC setup", parent=icc)
     cat_group = app_commands.Group(name="category", description="Manage categories", parent=icc)
     adm_group = app_commands.Group(name="admin", description="Admin overrides", parent=icc)
