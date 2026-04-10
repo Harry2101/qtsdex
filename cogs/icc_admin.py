@@ -36,10 +36,10 @@ from services.icc_reserve_service import (
 )
 from services import pokemon_list_db
 from utils.icc_checks import is_icc_admin, is_icc_organizer
-from utils.icc_embeds import build_draft_embed, build_published_embed
+from utils.icc_embeds import build_draft_embed
 from utils.icc_views import (
     DraftControlPanel,
-    PublishedOrgPanel,
+    build_published_panel,
     reattach_persistent_views,
 )
 
@@ -180,9 +180,7 @@ class ICCAdmin(commands.Cog):
             return
 
         # Build the public panel and edit it onto the placeholder
-        org_cats = await icc_db.get_org_categories(org["id"])
-        embed = await build_published_embed(org, guild_id)
-        view = PublishedOrgPanel(org, org_cats, guild_id)
+        embed, view = await build_published_panel(org, guild_id)
         await placeholder.edit(content=None, embed=embed, view=view)
 
         await interaction.followup.send("Org published! Claims are now open.", ephemeral=True)
@@ -207,9 +205,7 @@ class ICCAdmin(commands.Cog):
             view = DraftControlPanel(org, guild_id)
             await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
         elif org["status"] == "published":
-            org_cats = await icc_db.get_org_categories(org["id"])
-            embed = await build_published_embed(org, guild_id)
-            view = PublishedOrgPanel(org, org_cats, guild_id)
+            embed, view = await build_published_panel(org, guild_id)
             await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
         else:
             # complete/cancelled — read-only, use the old embed
@@ -224,6 +220,29 @@ class ICCAdmin(commands.Cog):
         guild_id = str(interaction.guild_id)
         ok, msg = await cancel_org(guild_id, str(interaction.user.id), reason=reason)
         await interaction.response.send_message(msg, ephemeral=True)
+
+    @icc.command(name="repost", description="Repost the org dashboard (if deleted)")
+    async def icc_repost(self, interaction: Interaction):
+        if not await is_icc_organizer(interaction):
+            return await interaction.response.send_message("You need organizer permissions.", ephemeral=True)
+        guild_id = str(interaction.guild_id)
+        org = await icc_db.get_active_org(guild_id)
+        if not org:
+            return await interaction.response.send_message("No published org to repost.", ephemeral=True)
+
+        await interaction.response.defer(ephemeral=True)
+
+        embed, view = await build_published_panel(org, guild_id)
+        new_msg = await interaction.channel.send(embed=embed, view=view)
+
+        # Update the stored announcement message ID so auto-refresh targets the new message
+        await icc_db.update_org_status(
+            org["id"], "published",
+            announcement_channel_id=str(interaction.channel_id),
+            announcement_message_id=str(new_msg.id),
+        )
+
+        await interaction.followup.send("Org dashboard reposted.", ephemeral=True)
 
     # ━━ /icc setup ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
@@ -256,6 +275,14 @@ class ICCAdmin(commands.Cog):
         await interaction.response.send_message(
             f"Helper role for **{cat['name']}** set to {role.mention}.", ephemeral=True,
         )
+
+    @setup_group.command(name="announce_ping_role", description="Set the role pinged when an org goes live")
+    @app_commands.describe(role="Role to ping via the 📢 button")
+    async def setup_announce_ping_role(self, interaction: Interaction, role: discord.Role):
+        if not await is_icc_admin(interaction):
+            return await interaction.response.send_message("You need Org admin permissions.", ephemeral=True)
+        await guild_settings_db.set_val(str(interaction.guild_id), "icc_announce_ping_role", str(role.id))
+        await interaction.response.send_message(f"Announce ping role set to {role.mention}.", ephemeral=True)
 
     # ━━ /icc category ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 

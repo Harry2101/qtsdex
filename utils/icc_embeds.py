@@ -12,6 +12,21 @@ from services import icc_db
 from services.guild_settings_db import make_footer
 
 
+# ── Display order ───────────────────────────────────────────────────────────
+# Categories are always shown in this fixed order in embeds and button rows.
+# Names not in this list sort to the end alphabetically.
+
+CATEGORY_ORDER = ["Rares", "GMax", "Regionals", "Eevos", "Reserve 1", "Reserve 2"]
+
+def sort_org_cats(org_cats: list[dict]) -> list[dict]:
+    """Sort org_categories into the canonical display order."""
+    order_map = {name.lower(): i for i, name in enumerate(CATEGORY_ORDER)}
+    return sorted(
+        org_cats,
+        key=lambda oc: (order_map.get(oc["name"].lower(), 999), oc["name"]),
+    )
+
+
 # ── Shared helpers (same logic as cogs/icc_admin.py) ────────────────────────
 
 def _progress_bar(done: int, total: int, length: int = 10) -> str:
@@ -38,7 +53,7 @@ async def build_draft_embed(org: dict, guild_id: str) -> discord.Embed:
     Embed for the draft control panel shown to the organizer.
     Shows categories, channel counts, reserve slots, and current reserves.
     """
-    org_cats = await icc_db.get_org_categories(org["id"])
+    org_cats = sort_org_cats(await icc_db.get_org_categories(org["id"]))
     categories = await icc_db.get_categories(guild_id)
     reserves = await icc_db.get_reserves_for_org(org["id"])
 
@@ -88,7 +103,7 @@ async def build_published_embed(org: dict, guild_id: str) -> discord.Embed:
     Shows categories with owners, progress bars, and a helper-text prompt
     to claim via the buttons below.
     """
-    org_cats = await icc_db.get_org_categories(org["id"])
+    org_cats = sort_org_cats(await icc_db.get_org_categories(org["id"]))
 
     label = org.get("label") or f"Org #{org['id']}"
 

@@ -14,22 +14,47 @@ import logging
 import discord
 from discord import Interaction
 
-from services import icc_db
+from services import icc_db, guild_settings_db
 from services.icc_org_service import publish_org, cancel_org
-from services.icc_claim_service import claim_category
+from services.icc_claim_service import claim_category, unclaim_category
 from utils.icc_checks import is_icc_organizer
-from utils.icc_embeds import build_draft_embed, build_published_embed
+from utils.icc_embeds import build_draft_embed, build_published_embed, sort_org_cats
 
 log = logging.getLogger("qtsdex.icc_views")
 
 
+# ── Fixed row assignments ───────────────────────────────────────────────────
+# Row 0: Rares, GMax, Regionals
+# Row 1: Eevos, Reserve 1, Reserve 2
+# Row 2: Ping, Refresh, Cancel Org
+
+_ROW_MAP = {
+    "rares": 0, "gmax": 0, "regionals": 0,
+    "eevos": 1, "reserve 1": 1, "reserve 2": 1,
+}
+_CONTROL_ROW = 2
+
+
 # ── Helpers ─────────────────────────────────────────────────────────────────
+
+async def _is_org_pinged(guild_id: str, org_id: int) -> bool:
+    """Check if the announce ping has already been sent for this org."""
+    val = await guild_settings_db.get(guild_id, f"icc_org_pinged_{org_id}")
+    return val == "1"
+
+
+async def build_published_panel(org: dict, guild_id: str) -> tuple[discord.Embed, "PublishedOrgPanel"]:
+    """Build the embed + view pair for a published org. Used everywhere."""
+    org_cats = sort_org_cats(await icc_db.get_org_categories(org["id"]))
+    embed = await build_published_embed(org, guild_id)
+    pinged = await _is_org_pinged(guild_id, org["id"])
+    view = PublishedOrgPanel(org, org_cats, guild_id, pinged=pinged)
+    return embed, view
+
 
 async def _refresh_published_panel(message: discord.Message, org: dict, guild_id: str):
     """Re-build the published embed + view and edit the message in-place."""
-    org_cats = await icc_db.get_org_categories(org["id"])
-    embed = await build_published_embed(org, guild_id)
-    view = PublishedOrgPanel(org, org_cats, guild_id)
+    embed, view = await build_published_panel(org, guild_id)
     try:
         await message.edit(embed=embed, view=view)
     except discord.HTTPException:
@@ -82,16 +107,10 @@ class DraftControlPanel(discord.ui.View):
 
         guild_id = self.guild_id
 
-        # Build the public panel embed before publishing so we can send it
-        # to the current channel as the announcement message.
         draft = await icc_db.get_draft_org(guild_id)
         if not draft:
             return await interaction.followup.send("No draft org to publish.", ephemeral=True)
 
-        # Publish — the announcement message is sent to the channel where
-        # the button was pressed.
-        # First send a placeholder so we get a message ID, then publish
-        # with that ID, then edit the placeholder with the real panel.
         placeholder = await interaction.channel.send("Publishing org…")
 
         ok, result_msg, org = await publish_org(
@@ -102,15 +121,10 @@ class DraftControlPanel(discord.ui.View):
             await placeholder.delete()
             return await interaction.followup.send(result_msg, ephemeral=True)
 
-        # Build and edit the real published panel onto the placeholder
-        org_cats = await icc_db.get_org_categories(org["id"])
-        embed = await build_published_embed(org, guild_id)
-        view = PublishedOrgPanel(org, org_cats, guild_id)
+        embed, view = await build_published_panel(org, guild_id)
         await placeholder.edit(content=None, embed=embed, view=view)
 
         await interaction.followup.send("Org published! Claims are now open.", ephemeral=True)
-
-        # Disable this draft panel since org is no longer a draft
         self.stop()
 
     @discord.ui.button(label="Cancel", style=discord.ButtonStyle.red, row=0)
@@ -147,27 +161,41 @@ class DraftControlPanel(discord.ui.View):
 
 class CategoryClaimButton(discord.ui.Button):
     """
-    A single category claim button.  Stores category_name in custom_id
-    for persistent-view dispatch.
+    A single category button.
+    - Unclaimed → green, clicking claims it
+    - Claimed by you → red, clicking unclaims (opt out)
+    - Claimed by someone else or complete → grey + disabled
     """
 
     def __init__(
         self,
         category_name: str,
         status: str,
+        owner_id: str | None,
         guild_id: str,
         org_id: int,
         *,
         row: int = 0,
     ):
-        # Disable when claimed or complete
-        disabled = status in ("claimed", "in_progress", "complete")
+        self.category_name = category_name
+        self.guild_id = guild_id
+        self.org_id = org_id
+        self._owner_id = owner_id
 
-        # Green if unclaimed (claimable), grey otherwise
-        if disabled:
+        # Determine style and disabled state
+        if status == "complete":
             style = discord.ButtonStyle.grey
+            disabled = True
+        elif owner_id:
+            # Claimed — red for the owner (they can click to unclaim),
+            # but we can't know who's viewing, so make it red + enabled.
+            # The callback checks ownership.
+            style = discord.ButtonStyle.red
+            disabled = False
         else:
+            # Unclaimed — green, claimable
             style = discord.ButtonStyle.green
+            disabled = False
 
         super().__init__(
             label=category_name,
@@ -176,15 +204,23 @@ class CategoryClaimButton(discord.ui.Button):
             custom_id=f"icc_claim:{guild_id}:{org_id}:{category_name}",
             row=row,
         )
-        self.category_name = category_name
-        self.guild_id = guild_id
-        self.org_id = org_id
 
     async def callback(self, interaction: Interaction):
         guild_id = self.guild_id
         user_id = str(interaction.user.id)
 
-        ok, msg = await claim_category(guild_id, user_id, self.category_name)
+        if self._owner_id:
+            # Button is claimed — only the owner can unclaim
+            if self._owner_id != user_id:
+                return await interaction.response.send_message(
+                    f"**{self.category_name}** is already claimed. Only the owner can opt out.",
+                    ephemeral=True,
+                )
+            # Owner clicked → unclaim
+            ok, msg = await unclaim_category(guild_id, user_id, self.category_name)
+        else:
+            # Unclaimed → claim
+            ok, msg = await claim_category(guild_id, user_id, self.category_name)
 
         if not ok:
             return await interaction.response.send_message(msg, ephemeral=True)
@@ -198,10 +234,69 @@ class CategoryClaimButton(discord.ui.Button):
             await _refresh_published_panel(interaction.message, org, guild_id)
 
 
+class AnnouncePingButton(discord.ui.Button):
+    """
+    Pings the configured announce_ping_role for the org.
+    Disappears after being pressed (panel is refreshed without it).
+    """
+
+    def __init__(self, guild_id: str, org_id: int, *, row: int = _CONTROL_ROW):
+        super().__init__(
+            label="\u200b",  # zero-width space — emoji only
+            emoji="📢",
+            style=discord.ButtonStyle.blurple,
+            custom_id=f"icc_ping:{guild_id}:{org_id}",
+            row=row,
+        )
+        self.guild_id = guild_id
+        self.org_id = org_id
+
+    async def callback(self, interaction: Interaction):
+        if not await is_icc_organizer(interaction):
+            return await interaction.response.send_message(
+                "You need organizer permissions.", ephemeral=True,
+            )
+
+        role_id_str = await guild_settings_db.get(self.guild_id, "icc_announce_ping_role")
+        if not role_id_str:
+            return await interaction.response.send_message(
+                "No announce ping role configured. Use `/org setup announce_ping_role <role>`.",
+                ephemeral=True,
+            )
+
+        # Send the ping as a normal message in the channel
+        try:
+            await interaction.channel.send(
+                f"<@&{role_id_str}>",
+                allowed_mentions=discord.AllowedMentions(roles=True),
+            )
+        except discord.HTTPException:
+            return await interaction.response.send_message(
+                "Failed to send ping.", ephemeral=True,
+            )
+
+        await interaction.response.send_message("Ping sent!", ephemeral=True)
+
+        # Mark as pinged so button doesn't come back on refresh
+        await guild_settings_db.set_val(
+            self.guild_id, f"icc_org_pinged_{self.org_id}", "1",
+        )
+
+        # Refresh panel — ping button will be absent
+        org = await icc_db.get_active_org(self.guild_id)
+        if org and interaction.message:
+            await _refresh_published_panel(interaction.message, org, self.guild_id)
+
+
 class PublishedOrgPanel(discord.ui.View):
     """
     Public-facing published org panel with category claim buttons
-    and Refresh / Cancel Org controls.
+    and Refresh / Cancel Org / Ping controls.
+
+    Button layout:
+      Row 0: Rares, GMax, Regionals
+      Row 1: Eevos, Reserve 1, Reserve 2
+      Row 2: 📢 Ping, Refresh, Cancel Org
 
     Uses persistent custom_id format so buttons survive bot restarts.
     """
@@ -211,35 +306,39 @@ class PublishedOrgPanel(discord.ui.View):
         org: dict,
         org_cats: list[dict],
         guild_id: str,
+        *,
+        pinged: bool = False,
     ):
         super().__init__(timeout=None)  # persistent
         self.org = org
         self.guild_id = guild_id
 
-        # Add category buttons (row 0, up to 5 per row)
-        for i, oc in enumerate(org_cats):
-            row = i // 5  # 5 buttons per row
+        # Add category buttons with fixed row assignments
+        for oc in org_cats:
+            row = _ROW_MAP.get(oc["name"].lower(), 1)
             self.add_item(
                 CategoryClaimButton(
                     category_name=oc["name"],
                     status=oc["status"],
+                    owner_id=oc.get("owner_id"),
                     guild_id=guild_id,
                     org_id=org["id"],
                     row=row,
                 )
             )
 
-        # Control buttons on the next row after categories
-        control_row = (len(org_cats) - 1) // 5 + 1 if org_cats else 1
+        # Ping button — only show if not yet pinged
+        if not pinged:
+            self.add_item(AnnouncePingButton(guild_id, org["id"], row=_CONTROL_ROW))
 
-        self.add_item(RefreshPublishedButton(guild_id, org["id"], row=control_row))
-        self.add_item(CancelOrgButton(guild_id, org["id"], row=control_row))
+        self.add_item(RefreshPublishedButton(guild_id, org["id"], row=_CONTROL_ROW))
+        self.add_item(CancelOrgButton(guild_id, org["id"], row=_CONTROL_ROW))
 
 
 class RefreshPublishedButton(discord.ui.Button):
     """Refresh the published panel embed."""
 
-    def __init__(self, guild_id: str, org_id: int, *, row: int = 1):
+    def __init__(self, guild_id: str, org_id: int, *, row: int = _CONTROL_ROW):
         super().__init__(
             label="Refresh",
             style=discord.ButtonStyle.grey,
@@ -255,16 +354,14 @@ class RefreshPublishedButton(discord.ui.Button):
             return await interaction.response.send_message(
                 "No published org found.", ephemeral=True,
             )
-        org_cats = await icc_db.get_org_categories(org["id"])
-        embed = await build_published_embed(org, self.guild_id)
-        view = PublishedOrgPanel(org, org_cats, self.guild_id)
+        embed, view = await build_published_panel(org, self.guild_id)
         await interaction.response.edit_message(embed=embed, view=view)
 
 
 class CancelOrgButton(discord.ui.Button):
     """Cancel the org (organizer/admin only)."""
 
-    def __init__(self, guild_id: str, org_id: int, *, row: int = 1):
+    def __init__(self, guild_id: str, org_id: int, *, row: int = _CONTROL_ROW):
         super().__init__(
             label="Cancel Org",
             style=discord.ButtonStyle.red,
@@ -283,11 +380,9 @@ class CancelOrgButton(discord.ui.Button):
         await interaction.response.send_message(msg, ephemeral=True)
 
         if ok and interaction.message:
-            # Update the panel to reflect cancellation
             org = await icc_db.get_org(self.org_id)
             if org:
                 embed = await build_published_embed(org, self.guild_id)
-                # Remove all buttons — org is done
                 try:
                     await interaction.message.edit(embed=embed, view=None)
                 except discord.HTTPException:
@@ -312,8 +407,7 @@ async def reattach_persistent_views(bot: discord.Client):
 
     for org in orgs:
         guild_id = org["guild_id"]
-        org_cats = await icc_db.get_org_categories(org["id"])
-        view = PublishedOrgPanel(org, org_cats, guild_id)
+        _, view = await build_published_panel(org, guild_id)
         bot.add_view(view, message_id=int(org["announcement_message_id"]))
         log.info(
             "Re-attached published panel for org %s (msg %s)",

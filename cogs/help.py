@@ -375,19 +375,34 @@ def _section_icc(gid: str) -> tuple[str, str, discord.Embed]:
     embed.add_field(
         name="Org lifecycle",
         value=(
-            "`/org start [label]`  — Create a draft org (invisible until published)\n"
-            "`/org publish`  — Go live: post announcement, open claims, start timers\n"
-            "`/org status [org_id]`  — Full dashboard: owners, progress, status\n"
+            "`/org start [label]`  — Create a draft org with interactive control panel\n"
+            "`/org publish`  — Go live: posts the org dashboard with claim buttons\n"
+            "`/org status [org_id]`  — Interactive dashboard (draft or published)\n"
             "`/org cancel [reason]`  — Cancel active or draft org\n"
+            "`/org repost`  — Re-send the org dashboard if it was deleted\n"
             "`/org history [limit]`  — View past completed/cancelled orgs"
+        ),
+        inline=False,
+    )
+    embed.add_field(
+        name="Interactive dashboard",
+        value=(
+            "The published org dashboard is a live-updating embed with buttons:\n"
+            "• **Category buttons** — tap to claim; tap again (red) to opt out\n"
+            "• **📢 Ping** — pings the announce role (organizer only, one-time)\n"
+            "• **Refresh** — manually refresh the panel\n"
+            "• **Cancel Org** — cancel from the panel (organizer only)\n\n"
+            "The panel auto-updates when channels are bought or categories complete."
         ),
         inline=False,
     )
     embed.add_field(
         name="Claiming  *(anyone)*",
         value=(
-            "`/org claim <category>`  — FCFS-claim an unclaimed category\n"
-            "`/org unclaim <category>`  — Release your claim (before any progress)\n"
+            "Tap a category button on the org dashboard to claim it (FCFS).\n"
+            "Tap the red button again to opt out (before any progress).\n\n"
+            "Slash command fallbacks:\n"
+            "`/org claim <category>`  ·  `/org unclaim <category>`\n"
             "`/org progress [category]`  — Progress bars + missing channels\n"
             "`/org mark_bought <channel>`  — Manually mark a channel as bought"
         ),
@@ -396,12 +411,12 @@ def _section_icc(gid: str) -> tuple[str, str, discord.Embed]:
     embed.add_field(
         name="Reserves  *(buyers)*",
         value=(
-            "`/org reserve pick <pokemon>`  — Reserve a Pokémon for your category slot (FCFS across whole org)\n"
+            "`/org reserve pick <pokemon>`  — Reserve a Pokémon (FCFS across whole org)\n"
             "   ↳ Autocomplete shows eligible Pokémon from normal + event lists\n"
             "   ↳ Reserving e.g. *Vivillon* covers **all** Vivillon forms automatically\n"
             "   ↳ Reserves **lock** when the org is published — no new picks after that\n"
-            "`/org reserve release <pokemon>`  — Free your reserve (no ping, no steal detection)\n"
-            "`/org reserve list [user]`  — See your current reserves (admins can check any user)"
+            "`/org reserve release <pokemon>`  — Free your reserve\n"
+            "`/org reserve list [user]`  — See reserves (admins can check any user)"
         ),
         inline=False,
     )
@@ -419,27 +434,28 @@ def _section_icc(gid: str) -> tuple[str, str, discord.Embed]:
         inline=False,
     )
     embed.add_field(
-        name="Setup & categories  *(admin only)*",
+        name="Setup  *(admin only)*",
         value=(
             "`/org setup admin_role <role>`  — Set Org admin role\n"
             "`/org setup organizer_role <role>`  — Set org creator role\n"
             "`/org setup helper_role <category> <role>`  — Set escalation role per category\n"
+            "`/org setup announce_ping_role <role>`  — Set the 📢 ping role\n"
             "`/org category create <name> <count> [coins]`  — Create a category\n"
-            "`/org category edit <category> [count] [coins] [reserve_slots]`  — Edit a category\n"
+            "`/org category edit <category> [count] [coins] [reserve_slots]`  — Edit\n"
             "`/org category delete/list/view`  — Manage categories\n"
-            "`/org category add_channels / remove_channels`  — Map channels to categories"
+            "`/org category add_channels / remove_channels`  — Map channels"
         ),
         inline=False,
     )
     embed.add_field(
         name="Auto-behaviour",
         value=(
-            "When Op Dex posts **🧪 Incense Activated!** in a mapped channel, the channel is marked bought.\n"
-            "When Op Dex posts **A wild X appeared!**, the bot replies with a reserve ping if matched.\n"
-            "Unknown spawns (not in any Pokémon list) are flagged to the bot owner by DM.\n"
-            "Steal alerts are posted to the admin channel if a reserved Pokémon is caught by someone else.\n"
+            "When Op Dex posts **🧪 Incense Activated!** in a mapped channel, the channel is marked bought "
+            "and the dashboard updates live.\n"
+            "When Op Dex posts **A wild X appeared!**, the bot pings the reserver if matched.\n"
+            "Steal alerts fire if someone else catches a reserved Pokémon.\n"
             "Unclaimed categories escalate to the helper role after **5 min**.\n"
-            "Buyers receive reminders every **5 min** until their category is complete."
+            "Buyers get reminders every **5 min** until their category is complete."
         ),
         inline=False,
     )
