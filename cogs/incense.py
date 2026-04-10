@@ -1183,7 +1183,7 @@ class IncenseCog(commands.Cog):
             colour=0x57F287,
         )
         embed.set_footer(text=make_footer(gid, "Incense Manager"))
-        await interaction.response.send_message(embed=embed, ephemeral=True)
+        await interaction.response.send_message(embed=embed)
 
     @setup_group.command(name="view", description="View the current incense configuration for this server.")
     async def setup_view(self, interaction: discord.Interaction):
@@ -1442,7 +1442,7 @@ class IncenseCog(commands.Cog):
                 colour=0xFF6B35,
             )
             embed.set_footer(text=make_footer(guild_id, "Incense Manager"))
-            await interaction.followup.send(embed=embed, ephemeral=True)
+            await interaction.followup.send(embed=embed)
         else:
             err_embed = discord.Embed(
                 title="❌ Lock Failed",
@@ -1497,7 +1497,7 @@ class IncenseCog(commands.Cog):
                 colour=0x57F287,
             )
             embed.set_footer(text=make_footer(guild_id, "Incense Manager"))
-            await interaction.followup.send(embed=embed, ephemeral=True)
+            await interaction.followup.send(embed=embed)
             if ch.id != interaction.channel_id:
                 try:
                     resume_embed = discord.Embed(
@@ -1742,7 +1742,6 @@ class IncenseCog(commands.Cog):
         await interaction.response.send_message(
             f"🗑️ Incense record cleared for {ch.mention}. "
             "It will register fresh on next activation.",
-            ephemeral=True,
         )
 
     # ── /incense resync ──────────────────────────────────────────────────────
@@ -1957,7 +1956,7 @@ class IncenseCog(commands.Cog):
             )
         await incense_db.log_action(gid, str(interaction.user.id), "group_delete", f"Deleted group '{name}'")
         await interaction.response.send_message(
-            f"🗑️ Group **{name}** deleted. Channels remain registered.", ephemeral=True
+            f"🗑️ Group **{name}** deleted. Channels remain registered."
         )
 
     @group_group.command(name="add", description="Add channels to an incense group.")
@@ -2064,7 +2063,6 @@ class IncenseCog(commands.Cog):
                     ),
                     colour=0x5865F2,
                 ),
-                ephemeral=True,
             )
 
         await interaction.response.defer(thinking=True)
