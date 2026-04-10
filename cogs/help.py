@@ -342,6 +342,69 @@ def _section_duels(gid: str) -> tuple[str, str, discord.Embed]:
     return ("⚔️", "Catch Duels", embed)
 
 
+def _section_icc(gid: str) -> tuple[str, str, discord.Embed]:
+    embed = discord.Embed(
+        title="🧪  Incense Control Center (ICC)  *(organizer/admin)*",
+        colour=0x57F287,
+    )
+    embed.add_field(
+        name="Org lifecycle",
+        value=(
+            "`/icc start [label]`  — Create a draft org (invisible until published)\n"
+            "`/icc publish`  — Go live: post announcement, open claims, start timers\n"
+            "`/icc status [org_id]`  — Full dashboard: owners, progress, status\n"
+            "`/icc cancel [reason]`  — Cancel active or draft org"
+        ),
+        inline=False,
+    )
+    embed.add_field(
+        name="Claiming  *(anyone)*",
+        value=(
+            "`/icc claim <category>`  — FCFS-claim an unclaimed category\n"
+            "`/icc unclaim <category>`  — Release your claim (before any progress)\n"
+            "`/icc progress [category]`  — Progress bars + missing channels\n"
+            "`/icc mark_bought <channel>`  — Manually mark a channel as bought"
+        ),
+        inline=False,
+    )
+    embed.add_field(
+        name="Admin overrides",
+        value=(
+            "`/icc assign <category> <user>`  — Force-assign a category\n"
+            "`/icc drop <category>`  — Force category back to unclaimed\n"
+            "`/icc admin mark_complete <category>`  — Force-complete a category\n"
+            "`/icc admin reset_category <category>`  — Wipe progress and unclaim\n"
+            "`/icc admin timer_status`  — View pending escalation/reminder timers\n"
+            "`/icc admin cancel_timer <id>`  — Cancel a specific timer\n"
+            "`/icc admin audit [user]`  — View ICC action log"
+        ),
+        inline=False,
+    )
+    embed.add_field(
+        name="Setup & categories  *(admin only)*",
+        value=(
+            "`/icc setup admin_role <role>`  — Set ICC admin role\n"
+            "`/icc setup organizer_role <role>`  — Set org creator role\n"
+            "`/icc setup helper_role <category> <role>`  — Set escalation role per category\n"
+            "`/icc category create/edit/delete/list/view`  — Manage categories\n"
+            "`/icc category add_channels / remove_channels`  — Map channels to categories"
+        ),
+        inline=False,
+    )
+    embed.add_field(
+        name="Auto-behaviour",
+        value=(
+            "When Operation Dex posts **🧪 Incense Activated!** in a mapped channel,\n"
+            "the channel is automatically marked bought in the active org.\n"
+            "Unclaimed categories escalate to the helper role after **5 min**.\n"
+            "Buyers receive reminders every **5 min** until their category is complete."
+        ),
+        inline=False,
+    )
+    embed.set_footer(text=make_footer(gid, "ICC"))
+    return ("🧪", "Incense Control Center", embed)
+
+
 def _section_changelog(gid: str) -> tuple[str, str, discord.Embed]:
     embed = discord.Embed(
         title="📋  Changelog",
@@ -480,6 +543,8 @@ class HelpCog(commands.Cog):
             sections.append(_section_channels(gid))
         if show_incense:
             sections.append(_section_incense(gid))
+        if admin:
+            sections.append(_section_icc(gid))
         sections.append(_section_changelog(gid))
         sections.append(_section_tips(gid))
 
