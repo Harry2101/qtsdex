@@ -36,9 +36,9 @@ async def _fetch_forms(pokemon_name: str) -> list[str] | None:
     if not species:
         return None
 
-    forms = []
     base = species.get("name", pokemon_name.lower()).title()
-    forms.append(base)
+    forms = []
+    named_forms = []  # forms with an explicit form_name (e.g. "fire", "alola")
 
     # Get varieties (e.g. Mega, Alolan, etc.)
     for variety in species.get("varieties", []):
@@ -52,9 +52,12 @@ async def _fetch_forms(pokemon_name: str) -> list[str] | None:
                 continue
             form_name = form_data.get("form_name", "")
             if form_name:
+                # Skip placeholder/invalid forms (e.g. Arceus-Unknown)
+                if form_name.lower() == "unknown":
+                    continue
                 nice_name = f"{base} {form_name.replace('-', ' ').title()}"
-                if nice_name not in forms:
-                    forms.append(nice_name)
+                if nice_name not in named_forms:
+                    named_forms.append(nice_name)
             else:
                 # Default form — use the variety name if different
                 variety_name = variety["pokemon"]["name"]
@@ -62,6 +65,13 @@ async def _fetch_forms(pokemon_name: str) -> list[str] | None:
                     nice = variety_name.replace("-", " ").title()
                     if nice not in forms:
                         forms.append(nice)
+
+    # Only include the bare base name if there are no named type/form variants.
+    # For Arceus the 18 typed forms replace the bare "Arceus" entry.
+    if named_forms:
+        forms = named_forms
+    else:
+        forms = [base] + forms
 
     return forms
 
