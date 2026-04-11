@@ -114,9 +114,15 @@ async def build_published_embed(org: dict, guild_id: str) -> discord.Embed:
         bar = _progress_bar(oc["channels_done"], oc["required_count"])
         done = oc["channels_done"]
         req = oc["required_count"]
+
+        # Fetch reserves for this category and format inline
+        reserves = await icc_db.get_reserves_for_org_category(oc["id"])
+        reserve_parts = [r["pokemon_name"] for r in reserves]
+        reserve_str = ("  `" + "  ·  ".join(reserve_parts) + "`") if reserve_parts else ""
+
         lines.append(
-            f"{emoji} **{oc['name']}** — {owner}\n"
-            f"  {bar} {done}/{req} ch"
+            f"{emoji} **{oc['name']}** — {owner}{reserve_str}\n"
+            f"  {bar} {done}/{req}"
         )
 
     description = "\n\n".join(lines) if lines else "No categories."
