@@ -1,10 +1,9 @@
 """
 cogs/pokemon.py  —  /pokemon
-Clean info card + battle card with proper layout.
+Battle card with toggleable strongest-moves panel.
 """
 
 import asyncio
-from typing import Optional
 
 import discord
 from discord import app_commands
@@ -18,9 +17,10 @@ from utils.embeds import (
 )
 from utils.normalizer import normalize
 from utils.type_chart import group_by_multiplier
-from utils.user_prefs import get as get_pref, set_pref
 
 # Lazy import to avoid circular — moves cog helpers imported inline in _go_moves
+
+DUELERS_ROLE_ID = 1483608023539650560
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -99,13 +99,9 @@ async def fetch_top_moves(move_entries: list) -> list[dict]:
     return with_power[:6]
 
 
-# ── Move table for battle card ────────────────────────────────────────────────
+# ── Move table ────────────────────────────────────────────────────────────────
 
 def _battle_move_lines(moves: list[dict]) -> str:
-    """
-    Each line: TYPE_EMOJI  Name  ·  NNNbp  ·  NNN%
-    Type emoji is outside the inline code, name is plain bold.
-    """
     if not moves:
         return "*No damaging moves found*"
     lines = []
@@ -123,46 +119,15 @@ def _battle_move_lines(moves: list[dict]) -> str:
 
 # ── Embed builders ────────────────────────────────────────────────────────────
 
-def build_info_embed(data: dict, guild_id: str = "") -> discord.Embed:
-    name  = data["name"].replace("-", " ").title()
-    dex   = data["id"]
-    types = [t["type"]["name"] for t in data["types"]]
-    stats = {s["stat"]["name"]: s["base_stat"] for s in data["stats"]}
-    total = sum(stats.values())
-
-    abilities = []
-    for a in data["abilities"]:
-        label = a["ability"]["name"].replace("-", " ").title()
-        abilities.append(f"• {label}" + (" *(hidden)*" if a["is_hidden"] else ""))
-
-    embed = discord.Embed(title=f"#{dex:04d}  {name}", colour=type_colour(types[0]))
-
-    embed.add_field(name="🏷️ Type",      value=type_badges(types),  inline=True)
-    embed.add_field(name="🔮 Abilities", value="\n".join(abilities), inline=True)
-    embed.add_field(name="\u200b",       value="\u200b",             inline=True)
-
-    embed.add_field(
-        name="📈 Base Stats",
-        value=build_stat_lines(stats, total),
-        inline=False,
-    )
-
-    sp = _sprite(data)
-    if sp:
-        embed.set_thumbnail(url=sp)
-    embed.set_footer(text=make_footer(guild_id))
-    return embed
-
-
 def build_battle_embed(
     data: dict,
-    top_moves: list[dict],
     ability_effects: dict[str, str],
     guild_id: str = "",
 ) -> discord.Embed:
     name  = data["name"].replace("-", " ").title()
     types = [t["type"]["name"] for t in data["types"]]
     stats = {s["stat"]["name"]: s["base_stat"] for s in data["stats"]}
+    dex   = data["id"]
     t1    = types[0]
     t2    = types[1] if len(types) > 1 else None
     total = sum(stats.values())
@@ -171,7 +136,7 @@ def build_battle_embed(
     buckets = group_by_multiplier(t1, t2)
 
     embed = discord.Embed(
-        title=f"⚔️  {name}",
+        title=f"#{dex:04d}  {name}",
         description=f"{type_badges(types)}  ·  {role}",
         colour=type_colour(t1),
     )
@@ -180,10 +145,10 @@ def build_battle_embed(
         embed.set_thumbnail(url=sp)
 
     weakness_rows = [
-        ("🔴 4×",   buckets["4x"]),
-        ("🟠 2×",   buckets["2x"]),
-        ("🟢 ½×",   buckets["0.5x"]),
-        ("🟡 ¼×",   buckets["0.25x"]),
+        ("🔴 4×",    buckets["4x"]),
+        ("🟠 2×",    buckets["2x"]),
+        ("🟢 ½×",    buckets["0.5x"]),
+        ("🟡 ¼×",    buckets["0.25x"]),
         ("⚫ Immune", buckets["0x"]),
     ]
     weak_parts = []
@@ -199,12 +164,11 @@ def build_battle_embed(
         )
 
     embed.add_field(
-        name="📈 Stats",
+        name="📈 Base Stats",
         value=build_stat_lines(stats, total),
         inline=False,
     )
 
-    # ── Abilities ─────────────────────────────────────────────────────────────
     ability_lines = []
     for a in data["abilities"]:
         slug   = a["ability"]["name"]
@@ -222,65 +186,90 @@ def build_battle_embed(
         inline=False,
     )
 
-    # ── Strongest moves ───────────────────────────────────────────────────────
+    embed.set_footer(text=make_footer(guild_id))
+    return embed
+
+
+def build_moves_embed(
+    data: dict,
+    top_moves: list[dict],
+    guild_id: str = "",
+) -> discord.Embed:
+    name  = data["name"].replace("-", " ").title()
+    types = [t["type"]["name"] for t in data["types"]]
+    t1    = types[0]
+
+    embed = discord.Embed(
+        title=f"⚔️  {name} — Strongest Moves",
+        colour=type_colour(t1),
+    )
+
+    warning = (
+        "> ⚠️ **These moves are ranked by base power only** — this is a rough algorithm "
+        "and does **not** account for accuracy, coverage, sets, or meta context.\n"
+        "> For competitive advice, check [Smogon](https://www.smogon.com/) or ping "
+        f"<@&{DUELERS_ROLE_ID}> to ask someone who knows!"
+    )
+    embed.add_field(name="\u200b", value=warning, inline=False)
     embed.add_field(
-        name="⚔️ Strongest Moves",
+        name="Top Moves by Power",
         value=_battle_move_lines(top_moves),
         inline=False,
     )
 
-    embed.set_footer(text=make_footer(guild_id, "Battle Card  •  "))
+    sp = _sprite(data)
+    if sp:
+        embed.set_thumbnail(url=sp)
+    embed.set_footer(text=make_footer(guild_id))
     return embed
 
 
 # ── View ──────────────────────────────────────────────────────────────────────
 
 class PokemonView(discord.ui.View):
-    def __init__(self, data: dict, user_id: int, guild_id: str = "", start_mode: str = "info"):
+    def __init__(self, data: dict, user_id: int, guild_id: str = ""):
         super().__init__(timeout=180)
         self.data             = data
         self.user_id          = user_id
         self.guild_id         = guild_id
-        self.mode             = start_mode
         self.top_moves:       list[dict]     = []
         self.ability_effects: dict[str, str] = {}
         self._sync_buttons()
 
     def _sync_buttons(self):
         self.clear_items()
-        if self.mode == "info":
-            b = discord.ui.Button(label="⚔️ Battle Card", style=discord.ButtonStyle.danger, row=0)
-            b.callback = self._go_battle
-            self.add_item(b)
-            m = discord.ui.Button(label="📋 Moves", style=discord.ButtonStyle.secondary, row=0)
-            m.callback = self._go_moves
-            self.add_item(m)
-        else:
-            b = discord.ui.Button(label="📋 Info", style=discord.ButtonStyle.primary, row=0)
-            b.callback = self._go_info
-            self.add_item(b)
+        moves_btn = discord.ui.Button(
+            label="⚔️ Strongest Moves",
+            style=discord.ButtonStyle.secondary,
+            row=0,
+        )
+        moves_btn.callback = self._go_top_moves
+        self.add_item(moves_btn)
+
+        movelist_btn = discord.ui.Button(
+            label="📋 Move List",
+            style=discord.ButtonStyle.secondary,
+            row=0,
+        )
+        movelist_btn.callback = self._go_moves
+        self.add_item(movelist_btn)
 
     def _guard(self, interaction: discord.Interaction) -> bool:
         return interaction.user.id == self.user_id
 
-    async def _go_battle(self, interaction: discord.Interaction):
+    async def _go_top_moves(self, interaction: discord.Interaction):
         if not self._guard(interaction):
             return await interaction.response.send_message(
-                "Only the person who ran this command can switch views.", ephemeral=True
+                "Only the person who ran this command can do that.", ephemeral=True
             )
-        await interaction.response.defer()
+        await interaction.response.defer(thinking=True)
         if not self.top_moves or not self.ability_effects:
             self.top_moves, self.ability_effects = await asyncio.gather(
                 fetch_top_moves(self.data.get("moves", [])),
                 fetch_ability_effects(self.data.get("abilities", [])),
             )
-        self.mode = "battle"
-        set_pref(self.user_id, "last_pokemon_mode", "battle")
-        self._sync_buttons()
-        await interaction.edit_original_response(
-            embed=build_battle_embed(self.data, self.top_moves, self.ability_effects, self.guild_id),
-            view=self,
-        )
+        embed = build_moves_embed(self.data, self.top_moves, self.guild_id)
+        await interaction.followup.send(embed=embed, ephemeral=True)
 
     async def _go_moves(self, interaction: discord.Interaction):
         if not self._guard(interaction):
@@ -289,7 +278,6 @@ class PokemonView(discord.ui.View):
             )
         await interaction.response.defer(thinking=True)
 
-        # Import here to avoid circular imports
         from cogs.moves import _collect, MovesView
 
         name   = self.data["name"].replace("-", " ").title()
@@ -307,18 +295,6 @@ class PokemonView(discord.ui.View):
         await view.ensure_fetched()
         view._sync_buttons()
         await interaction.followup.send(embed=view.embed(), view=view)
-
-    async def _go_info(self, interaction: discord.Interaction):
-        if not self._guard(interaction):
-            return await interaction.response.send_message(
-                "Only the person who ran this command can switch views.", ephemeral=True
-            )
-        self.mode = "info"
-        set_pref(self.user_id, "last_pokemon_mode", "info")
-        self._sync_buttons()
-        await interaction.response.edit_message(
-            embed=build_info_embed(self.data, self.guild_id), view=self
-        )
 
 
 # ── Cog ───────────────────────────────────────────────────────────────────────
@@ -343,18 +319,11 @@ class PokemonCog(commands.Cog):
                 ephemeral=True,
             )
 
-        gid        = str(interaction.guild_id or "")
-        start_mode = get_pref(interaction.user.id, "last_pokemon_mode") or "info"
-        view = PokemonView(data=data, user_id=interaction.user.id, guild_id=gid, start_mode=start_mode)
+        gid  = str(interaction.guild_id or "")
+        view = PokemonView(data=data, user_id=interaction.user.id, guild_id=gid)
 
-        if start_mode == "battle":
-            view.top_moves, view.ability_effects = await asyncio.gather(
-                fetch_top_moves(data.get("moves", [])),
-                fetch_ability_effects(data.get("abilities", [])),
-            )
-            embed = build_battle_embed(data, view.top_moves, view.ability_effects, gid)
-        else:
-            embed = build_info_embed(data, gid)
+        ability_effects = await fetch_ability_effects(data.get("abilities", []))
+        embed = build_battle_embed(data, ability_effects, gid)
 
         await interaction.followup.send(embed=embed, view=view)
 
