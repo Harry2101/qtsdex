@@ -80,6 +80,7 @@ def build_battle_embed(
     ability_effects: dict[str, str],
     guild_id: str = "",
     pokemon_arg: str = "",
+    meta: dict | None = None,
 ) -> discord.Embed:
     name  = data["name"].replace("-", " ").title()
     types = [t["type"]["name"] for t in data["types"]]
@@ -126,16 +127,24 @@ def build_battle_embed(
         inline=False,
     )
 
+    # Build set of meta ability names (lowercased) for cross-referencing
+    meta_ability_names: set[str] = set()
+    if meta:
+        for entry in meta.get("abilities", []):
+            meta_ability_names.add(entry["name"].lower().replace("-", " "))
+
     ability_lines = []
     for a in data["abilities"]:
         slug   = a["ability"]["name"]
         label  = slug.replace("-", " ").title()
         tag    = " `H`" if a["is_hidden"] else ""
         effect = ability_effects.get(slug, "")
+        # ✅ if this ability appears in the meta usage data
+        highlight = "✅ " if slug.replace("-", " ") in meta_ability_names else ""
         if effect:
-            ability_lines.append(f"**{label}**{tag} — {effect}")
+            ability_lines.append(f"{highlight}**{label}**{tag} — {effect}")
         else:
-            ability_lines.append(f"**{label}**{tag}")
+            ability_lines.append(f"{highlight}**{label}**{tag}")
 
     embed.add_field(
         name="🔮 Abilities",
@@ -143,57 +152,32 @@ def build_battle_embed(
         inline=False,
     )
 
-    suffix = f"/pokemon {pokemon_arg}" if pokemon_arg else ""
-    embed.set_footer(text=make_footer(guild_id, suffix))
-    return embed
-
-
-# ── VGC meta embed ────────────────────────────────────────────────────────────
-
-def _meta_lines(entries: list[dict]) -> str:
-    if not entries:
-        return "*No data*"
-    return "\n".join(f"**{e['name']}** — `{e['pct']}`" for e in entries)
-
-
-def build_meta_embed(
-    meta: dict,
-    name: str,
-    colour: int,
-    guild_id: str = "",
-    pokemon_arg: str = "",
-) -> discord.Embed:
-    embed = discord.Embed(
-        title=f"{name} — VGC Meta Usage",
-        description=(
-            "> ⚠️ **Data may not reflect your current meta.** "
-            "Verify that listed moves, items, and abilities are actually available and legal in your format before using them."
-        ),
-        colour=colour,
-    )
-
-    if meta.get("partners"):
+    # ── Meta fields (injected when VGC Meta is active) ────────────────────────
+    if meta:
+        if meta.get("partners"):
+            embed.add_field(
+                name="🤝 Common Cores",
+                value="\n".join(f"**{e['name']}** — `{e['pct']}`" for e in meta["partners"]),
+                inline=False,
+            )
+        if meta.get("items"):
+            embed.add_field(
+                name="🎒 Top Items",
+                value="\n".join(f"**{e['name']}** — `{e['pct']}`" for e in meta["items"]),
+                inline=False,
+            )
+        if meta.get("moves"):
+            embed.add_field(
+                name="⚔️ Meta Moves",
+                value="\n".join(f"**{e['name']}** — `{e['pct']}`" for e in meta["moves"]),
+                inline=False,
+            )
         embed.add_field(
-            name="👥 Top Partners",
-            value=_meta_lines(meta["partners"]),
-            inline=False,
-        )
-    if meta.get("items"):
-        embed.add_field(
-            name="🎒 Top Items",
-            value=_meta_lines(meta["items"]),
-            inline=False,
-        )
-    if meta.get("moves"):
-        embed.add_field(
-            name="⚔️ Top Moves",
-            value=_meta_lines(meta["moves"]),
-            inline=False,
-        )
-    if meta.get("abilities"):
-        embed.add_field(
-            name="🔮 Abilities",
-            value=_meta_lines(meta["abilities"]),
+            name="\u200b",
+            value=(
+                "> ⚠️ **Data may not reflect your current meta.** "
+                "Verify moves, items, and abilities are legal in your format."
+            ),
             inline=False,
         )
 
@@ -212,6 +196,8 @@ class PokemonView(discord.ui.View):
         self.guild_id         = guild_id
         self.pokemon_arg      = pokemon_arg
         self.ability_effects: dict[str, str] = ability_effects or {}
+        self.cached_meta:     dict | None    = None
+        self.meta_shown       = False
         self._sync_buttons()
 
     def _sync_buttons(self):
@@ -225,8 +211,8 @@ class PokemonView(discord.ui.View):
         self.add_item(movelist_btn)
 
         meta_btn = discord.ui.Button(
-            label="📊 VGC Meta",
-            style=discord.ButtonStyle.secondary,
+            label="📊 VGC Meta" if not self.meta_shown else "❌ Hide Meta",
+            style=discord.ButtonStyle.secondary if not self.meta_shown else discord.ButtonStyle.danger,
             row=0,
         )
         meta_btn.callback = self._go_meta
@@ -265,24 +251,29 @@ class PokemonView(discord.ui.View):
             return await interaction.response.send_message(
                 "Only the person who ran this command can do that.", ephemeral=True
             )
-        await interaction.response.defer(thinking=True)
+        await interaction.response.defer()
 
-        name   = self.data["name"].replace("-", " ").title()
-        types  = [t["type"]["name"] for t in self.data["types"]]
-        colour = type_colour(types[0])
+        if not self.cached_meta:
+            self.cached_meta = await fetch_meta(self.data["name"])
 
-        meta = await fetch_meta(self.data["name"])
-        if not meta:
+        if not self.cached_meta and not self.meta_shown:
+            name = self.data["name"].replace("-", " ").title()
             return await interaction.followup.send(
-                embed=error_embed(
-                    "No VGC Data",
-                    f"**{name}** has no usage data on Limitless VGC.",
-                ),
+                embed=error_embed("No VGC Data", f"**{name}** has no usage data on Limitless VGC."),
                 ephemeral=True,
             )
 
-        embed = build_meta_embed(meta, name, colour, self.guild_id, self.pokemon_arg)
-        await interaction.followup.send(embed=embed)
+        self.meta_shown = not self.meta_shown
+        self._sync_buttons()
+
+        embed = build_battle_embed(
+            self.data,
+            self.ability_effects,
+            self.guild_id,
+            self.pokemon_arg,
+            meta=self.cached_meta if self.meta_shown else None,
+        )
+        await interaction.edit_original_response(embed=embed, view=self)
 
 
 # ── Cog ───────────────────────────────────────────────────────────────────────
