@@ -227,9 +227,9 @@ class PokemonView(discord.ui.View):
         self.add_item(movelist_btn)
 
         meta_btn = discord.ui.Button(
-            label="Meta" if not self.meta_shown else "Hide Meta",
-            emoji="📊" if not self.meta_shown else "✅",
-            style=discord.ButtonStyle.secondary if not self.meta_shown else discord.ButtonStyle.success,
+            label="Meta",
+            emoji="📊",
+            style=discord.ButtonStyle.primary if self.meta_shown else discord.ButtonStyle.secondary,
             row=0,
         )
         meta_btn.callback = self._go_meta
@@ -348,14 +348,21 @@ class _PokemonSearchModal(discord.ui.Modal, title="Search Pokémon"):
             )
 
         v = self._parent_view
-        v.data             = data
-        v.pokemon_arg      = pokemon
-        v.ability_effects  = await fetch_ability_effects(data.get("abilities", []))
-        v.cached_meta      = None
-        v.meta_shown       = False
+        v.data            = data
+        v.pokemon_arg     = pokemon
+        v.ability_effects = await fetch_ability_effects(data.get("abilities", []))
+        v.cached_meta     = None
+        # re-fetch meta immediately if the panel was already open
+        if v.meta_shown:
+            v.cached_meta = await fetch_meta(data["name"])
+            if not v.cached_meta:
+                v.meta_shown = False
         v._sync_buttons()
 
-        embed = build_battle_embed(data, v.ability_effects, v.guild_id, pokemon)
+        embed = build_battle_embed(
+            data, v.ability_effects, v.guild_id, pokemon,
+            meta=v.cached_meta if v.meta_shown else None,
+        )
         if fallback_notice:
             embed.description = f"> ℹ️ {fallback_notice}\n{embed.description}"
 
