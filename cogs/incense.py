@@ -384,12 +384,26 @@ def _add_two_col(embed: discord.Embed, name: str, mentions: list[str], per_col: 
 
 # ── Embed helpers ─────────────────────────────────────────────────────────────
 
+def _compact_channel_field(embed: discord.Embed, label: str, cids: list[str], cap: int = 30):
+    """
+    Add a single compact field listing channel mentions as a wrapped comma-separated row.
+    Shows up to `cap` mentions; appends "+N more" if there are extras.
+    Stays as one field — no multi-column expansion — keeping the embed tight.
+    """
+    shown = cids[:cap]
+    extra = len(cids) - cap
+    text  = "  ".join(f"<#{c}>" for c in shown)
+    if extra > 0:
+        text += f"  *+{extra} more*"
+    embed.add_field(name=label, value=text, inline=False)
+
+
 def _pause_embed(
     locked, already, failed, cleaned,
     guild_id: str = "",
     guild: Optional[discord.Guild] = None,
 ) -> discord.Embed:
-    colour = 0xED4245 if failed else (0xFEE75C if already else 0xFF6B35)
+    colour = 0xED4245 if failed else (0xFEE75C if already and not locked else 0xFF6B35)
     embed  = discord.Embed(title="⏸️  Mass Incense Paused", colour=colour)
 
     parts = []
@@ -409,18 +423,16 @@ def _pause_embed(
         failed  = _sort_channel_ids(guild, failed)
 
     if locked:
-        _add_two_col(embed, f"🔒 Locked ({len(locked)})",
-                     [f"<#{c}>" for c in locked])
-    if already:
-        _add_two_col(embed, f"⏭️ Already paused ({len(already)})",
-                     [f"<#{c}>" for c in already])
+        _compact_channel_field(embed, f"🔒 Locked ({len(locked)})", locked)
     if failed:
-        _add_two_col(embed, f"⚠️ Failed ({len(failed)})",
-                     [f"<#{c}>" for c in failed])
+        _compact_channel_field(embed, f"⚠️ Failed ({len(failed)})", failed)
+    # "already paused" is low-value noise — only show if it's the only outcome or there's ≤10
+    if already and (not locked or len(already) <= 10):
+        _compact_channel_field(embed, f"⏭️ Already paused ({len(already)})", already)
     if cleaned:
         embed.add_field(
             name=f"🧹 Cleaned up ({len(cleaned)})",
-            value=f"{len(cleaned)} deleted channel(s) removed from database.",
+            value=f"{len(cleaned)} deleted channel(s) removed from the database.",
             inline=False,
         )
     embed.set_footer(text=make_footer(guild_id, "Incense Manager"))
@@ -452,18 +464,16 @@ def _resume_embed(
         failed   = _sort_channel_ids(guild, failed)
 
     if unlocked:
-        _add_two_col(embed, f"🔓 Resumed ({len(unlocked)})",
-                     [f"<#{c}>" for c in unlocked])
-    if already:
-        _add_two_col(embed, f"⏭️ Already active ({len(already)})",
-                     [f"<#{c}>" for c in already])
+        _compact_channel_field(embed, f"🔓 Unlocked ({len(unlocked)})", unlocked)
     if failed:
-        _add_two_col(embed, f"⚠️ Failed ({len(failed)})",
-                     [f"<#{c}>" for c in failed])
+        _compact_channel_field(embed, f"⚠️ Failed ({len(failed)})", failed)
+    # "already live" is low-value noise — only show if it's the only outcome or there's ≤10
+    if already and (not unlocked or len(already) <= 10):
+        _compact_channel_field(embed, f"⏭️ Already live ({len(already)})", already)
     if cleaned:
         embed.add_field(
             name=f"🧹 Cleaned up ({len(cleaned)})",
-            value=f"{len(cleaned)} deleted channel(s) removed from database.",
+            value=f"{len(cleaned)} deleted channel(s) removed from the database.",
             inline=False,
         )
     embed.set_footer(text=make_footer(guild_id, "Incense Manager"))
