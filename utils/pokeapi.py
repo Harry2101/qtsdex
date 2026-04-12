@@ -91,6 +91,9 @@ async def get_type(name: str) -> Optional[dict]:
 async def get_item(name: str) -> Optional[dict]:
     return await fetch(f"item/{name.lower()}")
 
+async def get_species(name: str) -> Optional[dict]:
+    return await fetch(f"pokemon-species/{name.lower()}")
+
 
 async def close():
     global _session

@@ -22,6 +22,42 @@ from utils.type_chart import group_by_multiplier
 # Lazy import to avoid circular — moves cog helpers imported inline in _go_moves
 
 
+# ── Shared loader ─────────────────────────────────────────────────────────────
+
+async def _load_pokemon(pokemon: str) -> tuple[dict | None, list[str], str | None]:
+    """
+    Fetch Pokémon data + species varieties for a user-supplied name.
+    Returns (data, varieties, fallback_notice).
+    varieties is a list of slugs (empty if only one form or species fetch fails).
+    fallback_notice is set if we fell back from an unimplemented form.
+    """
+    slug = normalize(pokemon)
+    data = await pokeapi.get_pokemon(slug)
+
+    fallback_notice: str | None = None
+    if not data:
+        base = _strip_form_suffix(slug)
+        if base and base != slug:
+            data = await pokeapi.get_pokemon(base)
+            if data:
+                form_label = slug.replace("-", " ").title()
+                fallback_notice = f"**{form_label}** doesn't exist yet — showing base form instead."
+                slug = base
+
+    if not data:
+        return None, [], None
+
+    # Fetch species for variety list (parallel with data already fetched)
+    species = await pokeapi.get_species(data["name"])
+    varieties: list[str] = []
+    if species:
+        all_vars = [v["pokemon"]["name"] for v in species.get("varieties", [])]
+        if len(all_vars) > 1:
+            varieties = all_vars
+
+    return data, varieties, fallback_notice
+
+
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
 _FORM_SUFFIXES = (
@@ -203,7 +239,7 @@ def build_battle_embed(
 # ── View ──────────────────────────────────────────────────────────────────────
 
 class PokemonView(discord.ui.View):
-    def __init__(self, data: dict, user_id: int, guild_id: str = "", ability_effects: dict[str, str] | None = None, pokemon_arg: str = ""):
+    def __init__(self, data: dict, user_id: int, guild_id: str = "", ability_effects: dict[str, str] | None = None, pokemon_arg: str = "", varieties: list[str] | None = None):
         super().__init__(timeout=180)
         self.data             = data
         self.user_id          = user_id
@@ -212,6 +248,7 @@ class PokemonView(discord.ui.View):
         self.ability_effects: dict[str, str] = ability_effects or {}
         self.cached_meta:     dict | None    = None
         self.meta_shown       = False
+        self.varieties:       list[str]      = varieties or []
         self._sync_buttons()
 
     def _sync_buttons(self):
@@ -243,6 +280,24 @@ class PokemonView(discord.ui.View):
         )
         search_btn.callback = self._go_search
         self.add_item(search_btn)
+
+        if self.varieties:
+            current_slug = self.data["name"]
+            options = [
+                discord.SelectOption(
+                    label=slug.replace("-", " ").title(),
+                    value=slug,
+                    default=(slug == current_slug),
+                )
+                for slug in self.varieties[:25]
+            ]
+            forms_select = discord.ui.Select(
+                placeholder="Alt forms & megas…",
+                options=options,
+                row=1,
+            )
+            forms_select.callback = self._go_select
+            self.add_item(forms_select)
 
     def _guard(self, interaction: discord.Interaction) -> bool:
         return interaction.user.id == self.user_id
@@ -301,6 +356,39 @@ class PokemonView(discord.ui.View):
         )
         await interaction.edit_original_response(embed=embed, view=self)
 
+    async def _go_select(self, interaction: discord.Interaction):
+        if not self._guard(interaction):
+            return await interaction.response.send_message(
+                "Only the person who ran this command can do that.", ephemeral=True
+            )
+        await interaction.response.defer()
+
+        slug = interaction.data["values"][0]
+        data, _, fallback_notice = await _load_pokemon(slug)
+        if not data:
+            return await interaction.followup.send(
+                embed=error_embed("Not Found", f"**{slug}** wasn't found."),
+                ephemeral=True,
+            )
+
+        self.data            = data
+        self.pokemon_arg     = slug
+        self.ability_effects = await fetch_ability_effects(data.get("abilities", []))
+        self.cached_meta     = None
+        if self.meta_shown:
+            self.cached_meta = await fetch_meta(data["name"])
+            if not self.cached_meta:
+                self.meta_shown = False
+        self._sync_buttons()
+
+        embed = build_battle_embed(
+            data, self.ability_effects, self.guild_id, slug,
+            meta=self.cached_meta if self.meta_shown else None,
+        )
+        if fallback_notice:
+            embed.description = f"> ℹ️ {fallback_notice}\n{embed.description}"
+        await interaction.edit_original_response(embed=embed, view=self)
+
     async def _go_search(self, interaction: discord.Interaction):
         if not self._guard(interaction):
             return await interaction.response.send_message(
@@ -329,17 +417,7 @@ class _PokemonSearchModal(discord.ui.Modal, title="Search Pokémon"):
         await interaction.response.defer()
 
         pokemon = self.query.value.strip()
-        slug    = normalize(pokemon)
-        data    = await pokeapi.get_pokemon(slug)
-
-        fallback_notice: str | None = None
-        if not data:
-            base = _strip_form_suffix(slug)
-            if base and base != slug:
-                data = await pokeapi.get_pokemon(base)
-                if data:
-                    form_label = slug.replace("-", " ").title()
-                    fallback_notice = f"**{form_label}** doesn't exist yet — showing base form instead."
+        data, varieties, fallback_notice = await _load_pokemon(pokemon)
 
         if not data:
             return await interaction.followup.send(
@@ -350,9 +428,9 @@ class _PokemonSearchModal(discord.ui.Modal, title="Search Pokémon"):
         v = self._parent_view
         v.data            = data
         v.pokemon_arg     = pokemon
+        v.varieties       = varieties
         v.ability_effects = await fetch_ability_effects(data.get("abilities", []))
         v.cached_meta     = None
-        # re-fetch meta immediately if the panel was already open
         if v.meta_shown:
             v.cached_meta = await fetch_meta(data["name"])
             if not v.cached_meta:
@@ -384,17 +462,7 @@ class PokemonCog(commands.Cog):
     async def pokemon_cmd(self, interaction: discord.Interaction, pokemon: str):
         await interaction.response.defer(thinking=True)
 
-        slug = normalize(pokemon)
-        data = await pokeapi.get_pokemon(slug)
-
-        fallback_notice: str | None = None
-        if not data:
-            base = _strip_form_suffix(slug)
-            if base and base != slug:
-                data = await pokeapi.get_pokemon(base)
-                if data:
-                    form_label = slug.replace("-", " ").title()
-                    fallback_notice = f"**{form_label}** doesn't exist yet — showing base form instead."
+        data, varieties, fallback_notice = await _load_pokemon(pokemon)
 
         if not data:
             return await interaction.followup.send(
@@ -404,7 +472,7 @@ class PokemonCog(commands.Cog):
 
         gid             = str(interaction.guild_id or "")
         ability_effects = await fetch_ability_effects(data.get("abilities", []))
-        view = PokemonView(data=data, user_id=interaction.user.id, guild_id=gid, ability_effects=ability_effects, pokemon_arg=pokemon)
+        view  = PokemonView(data=data, user_id=interaction.user.id, guild_id=gid, ability_effects=ability_effects, pokemon_arg=pokemon, varieties=varieties)
         embed = build_battle_embed(data, ability_effects, gid, pokemon)
 
         if fallback_notice:
