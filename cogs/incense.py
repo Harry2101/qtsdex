@@ -796,14 +796,19 @@ class _IncenseRemoveConfirmView(discord.ui.View):
 # ── Channel-info button view ──────────────────────────────────────────────────
 
 class _ChannelInfoView(discord.ui.View):
-    """Lock / Unlock buttons for /incense channel-info."""
+    """Lock / Unlock buttons for /incense channel-info.
+
+    Both buttons are always present in the view; the irrelevant one starts
+    disabled.  On a successful action the buttons swap enabled/disabled state
+    so the view stays usable without needing to re-invoke the command.
+    """
 
     def __init__(
         self,
         author_id: int,
-        channel: discord.TextChannel,
-        guild_id: str,
-        opdex_id: int,
+        channel:   discord.TextChannel,
+        guild_id:  str,
+        opdex_id:  int,
         is_locked: bool,
     ):
         super().__init__(timeout=60)
@@ -811,11 +816,9 @@ class _ChannelInfoView(discord.ui.View):
         self.channel   = channel
         self.guild_id  = guild_id
         self.opdex_id  = opdex_id
-        # Show only the relevant button based on current state
-        if is_locked:
-            self.remove_item(self.btn_lock)
-        else:
-            self.remove_item(self.btn_unlock)
+        # Start with the already-done action disabled
+        self.btn_lock.disabled   = is_locked      # already locked → can't lock again
+        self.btn_unlock.disabled = not is_locked  # already unlocked → can't unlock again
 
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
         if interaction.user.id != self.author_id:
@@ -828,21 +831,27 @@ class _ChannelInfoView(discord.ui.View):
             item.disabled = True
         self.stop()
 
+    def _swap_buttons(self, now_locked: bool):
+        """After a successful action, flip which button is enabled."""
+        self.btn_lock.disabled   = now_locked
+        self.btn_unlock.disabled = not now_locked
+
     @discord.ui.button(label="Lock", style=discord.ButtonStyle.danger, emoji="🔒")
     async def btn_lock(self, interaction: discord.Interaction, button: discord.ui.Button):
         await interaction.response.defer()
-        ch = self.channel
+        ch  = self.channel
         cid = str(ch.id)
         if _is_channel_locked(ch, self.opdex_id):
             await interaction.followup.send(f"ℹ️ {ch.mention} is already locked.", ephemeral=True)
             return
         ok = await _lock_channel(ch, self.opdex_id)
-        await incense_db.set_paused(self.guild_id, cid, True)
         if ok:
-            await incense_db.log_action(self.guild_id, str(interaction.user.id), "lock", f"Locked #{ch.name} via channel-info")
-            button.disabled = True
-            # Swap to show unlock button enabled
-            self.btn_unlock.disabled = False
+            await incense_db.set_paused(self.guild_id, cid, True)
+            await incense_db.log_action(
+                self.guild_id, str(interaction.user.id), "lock",
+                f"Locked #{ch.name} via channel-info",
+            )
+            self._swap_buttons(now_locked=True)
             await interaction.edit_original_response(view=self)
             await interaction.followup.send(
                 embed=discord.Embed(title="🔒 Locked", description=f"{ch.mention} has been locked.", colour=0xFF6B35),
@@ -850,24 +859,30 @@ class _ChannelInfoView(discord.ui.View):
             )
         else:
             await interaction.followup.send(
-                embed=discord.Embed(title="❌ Lock Failed", description="Check my **Manage Channel** / **Manage Roles** permissions.", colour=0xED4245),
+                embed=discord.Embed(
+                    title="❌ Lock Failed",
+                    description="Check my **Manage Channel** / **Manage Roles** permissions.",
+                    colour=0xED4245,
+                ),
                 ephemeral=True,
             )
 
     @discord.ui.button(label="Unlock", style=discord.ButtonStyle.success, emoji="🔓")
     async def btn_unlock(self, interaction: discord.Interaction, button: discord.ui.Button):
         await interaction.response.defer()
-        ch = self.channel
+        ch  = self.channel
         cid = str(ch.id)
         if not _is_channel_locked(ch, self.opdex_id):
             await interaction.followup.send(f"ℹ️ {ch.mention} is already unlocked.", ephemeral=True)
             return
         ok = await _unlock_channel(ch, self.opdex_id)
-        await incense_db.set_paused(self.guild_id, cid, False)
         if ok:
-            await incense_db.log_action(self.guild_id, str(interaction.user.id), "unlock", f"Unlocked #{ch.name} via channel-info")
-            button.disabled = True
-            self.btn_lock.disabled = False
+            await incense_db.set_paused(self.guild_id, cid, False)
+            await incense_db.log_action(
+                self.guild_id, str(interaction.user.id), "unlock",
+                f"Unlocked #{ch.name} via channel-info",
+            )
+            self._swap_buttons(now_locked=False)
             await interaction.edit_original_response(view=self)
             await interaction.followup.send(
                 embed=discord.Embed(title="🔓 Unlocked", description=f"{ch.mention} is now live. 🎉", colour=0x57F287),
@@ -885,7 +900,11 @@ class _ChannelInfoView(discord.ui.View):
                 pass
         else:
             await interaction.followup.send(
-                embed=discord.Embed(title="❌ Unlock Failed", description="Check my **Manage Channel** / **Manage Roles** permissions.", colour=0xED4245),
+                embed=discord.Embed(
+                    title="❌ Unlock Failed",
+                    description="Check my **Manage Channel** / **Manage Roles** permissions.",
+                    colour=0xED4245,
+                ),
                 ephemeral=True,
             )
 
@@ -1658,13 +1677,13 @@ class IncenseCog(commands.Cog):
 
         guild = interaction.guild
         if locked:
-            _add_two_col(embed, f"🔒 Locked ({len(locked)})", [f"<#{c}>" for c in _sort_channel_ids(guild, locked)])
-        if already:
-            _add_two_col(embed, f"⏭️ Already locked ({len(already)})", [f"<#{c}>" for c in _sort_channel_ids(guild, already)])
+            _compact_channel_field(embed, f"🔒 Locked ({len(locked)})", _sort_channel_ids(guild, locked))
         if failed:
-            _add_two_col(embed, f"⚠️ Failed ({len(failed)})", [f"<#{c}>" for c in _sort_channel_ids(guild, failed)])
+            _compact_channel_field(embed, f"⚠️ Failed ({len(failed)})", _sort_channel_ids(guild, failed))
+        if already and (not locked or len(already) <= 10):
+            _compact_channel_field(embed, f"⏭️ Already locked ({len(already)})", _sort_channel_ids(guild, already))
         if not_registered:
-            _add_two_col(embed, f"❓ Not registered ({len(not_registered)})", [f"<#{c}>" for c in not_registered])
+            _compact_channel_field(embed, f"❓ Not registered ({len(not_registered)})", not_registered)
         embed.set_footer(text=make_footer(guild_id, "Incense Manager"))
         await interaction.followup.send(embed=embed)
 
@@ -1837,13 +1856,13 @@ class IncenseCog(commands.Cog):
 
         guild = interaction.guild
         if unlocked:
-            _add_two_col(embed, f"🔓 Unlocked ({len(unlocked)})", [f"<#{c}>" for c in _sort_channel_ids(guild, unlocked)])
-        if already:
-            _add_two_col(embed, f"⏭️ Already unlocked ({len(already)})", [f"<#{c}>" for c in _sort_channel_ids(guild, already)])
+            _compact_channel_field(embed, f"🔓 Unlocked ({len(unlocked)})", _sort_channel_ids(guild, unlocked))
         if failed:
-            _add_two_col(embed, f"⚠️ Failed ({len(failed)})", [f"<#{c}>" for c in _sort_channel_ids(guild, failed)])
+            _compact_channel_field(embed, f"⚠️ Failed ({len(failed)})", _sort_channel_ids(guild, failed))
+        if already and (not unlocked or len(already) <= 10):
+            _compact_channel_field(embed, f"⏭️ Already unlocked ({len(already)})", _sort_channel_ids(guild, already))
         if not_registered:
-            _add_two_col(embed, f"❓ Not registered ({len(not_registered)})", [f"<#{c}>" for c in not_registered])
+            _compact_channel_field(embed, f"❓ Not registered ({len(not_registered)})", not_registered)
         embed.set_footer(text=make_footer(guild_id, "Incense Manager"))
         await interaction.followup.send(embed=embed)
 
