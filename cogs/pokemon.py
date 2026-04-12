@@ -192,7 +192,8 @@ def build_battle_embed(
             inline=False,
         )
 
-    suffix = f"/pokemon {pokemon_arg}" if pokemon_arg else ""
+    base_suffix = f"/pokemon {pokemon_arg}" if pokemon_arg else "/pokemon"
+    suffix = f"{base_suffix}  •  📋 moves · 📊 vgc · 🔍 search"
     embed.set_footer(text=make_footer(guild_id, suffix))
     return embed
 
@@ -213,8 +214,9 @@ class PokemonView(discord.ui.View):
 
     def _sync_buttons(self):
         self.clear_items()
+
         movelist_btn = discord.ui.Button(
-            label="📋 Move List",
+            emoji="📋",
             style=discord.ButtonStyle.secondary,
             row=0,
         )
@@ -222,12 +224,20 @@ class PokemonView(discord.ui.View):
         self.add_item(movelist_btn)
 
         meta_btn = discord.ui.Button(
-            label="📊 VGC Meta" if not self.meta_shown else "❌ Hide Meta",
+            emoji="📊" if not self.meta_shown else "❌",
             style=discord.ButtonStyle.secondary if not self.meta_shown else discord.ButtonStyle.danger,
             row=0,
         )
         meta_btn.callback = self._go_meta
         self.add_item(meta_btn)
+
+        search_btn = discord.ui.Button(
+            emoji="🔍",
+            style=discord.ButtonStyle.secondary,
+            row=0,
+        )
+        search_btn.callback = self._go_search
+        self.add_item(search_btn)
 
     def _guard(self, interaction: discord.Interaction) -> bool:
         return interaction.user.id == self.user_id
@@ -285,6 +295,66 @@ class PokemonView(discord.ui.View):
             meta=self.cached_meta if self.meta_shown else None,
         )
         await interaction.edit_original_response(embed=embed, view=self)
+
+    async def _go_search(self, interaction: discord.Interaction):
+        if not self._guard(interaction):
+            return await interaction.response.send_message(
+                "Only the person who ran this command can do that.", ephemeral=True
+            )
+        await interaction.response.send_modal(
+            _PokemonSearchModal(view=self)
+        )
+
+
+# ── Search modal ──────────────────────────────────────────────────────────────
+
+class _PokemonSearchModal(discord.ui.Modal, title="Search Pokémon"):
+    query = discord.ui.TextInput(
+        label="Name or Dex number",
+        placeholder="e.g. Garchomp, 445, rotom-wash…",
+        min_length=1,
+        max_length=50,
+    )
+
+    def __init__(self, view: "PokemonView"):
+        super().__init__()
+        self._parent_view = view
+
+    async def on_submit(self, interaction: discord.Interaction):
+        await interaction.response.defer()
+
+        pokemon = self.query.value.strip()
+        slug    = normalize(pokemon)
+        data    = await pokeapi.get_pokemon(slug)
+
+        fallback_notice: str | None = None
+        if not data:
+            base = _strip_form_suffix(slug)
+            if base and base != slug:
+                data = await pokeapi.get_pokemon(base)
+                if data:
+                    form_label = slug.replace("-", " ").title()
+                    fallback_notice = f"**{form_label}** doesn't exist yet — showing base form instead."
+
+        if not data:
+            return await interaction.followup.send(
+                embed=error_embed("Not Found", f"**{pokemon}** wasn't found."),
+                ephemeral=True,
+            )
+
+        v = self._parent_view
+        v.data             = data
+        v.pokemon_arg      = pokemon
+        v.ability_effects  = await fetch_ability_effects(data.get("abilities", []))
+        v.cached_meta      = None
+        v.meta_shown       = False
+        v._sync_buttons()
+
+        embed = build_battle_embed(data, v.ability_effects, v.guild_id, pokemon)
+        if fallback_notice:
+            embed.description = f"> ℹ️ {fallback_notice}\n{embed.description}"
+
+        await interaction.edit_original_response(embed=embed, view=v)
 
 
 # ── Cog ───────────────────────────────────────────────────────────────────────
