@@ -290,7 +290,7 @@ class ChannelsCog(commands.Cog):
         view = CreateConfirmView(
             interaction, count, prefix, start_number, category, after, gid
         )
-        await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
+        await interaction.response.send_message(embed=embed, view=view)
 
     # ── /channel delete ──────────────────────────────────────────────────────
 
