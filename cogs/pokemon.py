@@ -1,6 +1,6 @@
 """
 cogs/pokemon.py  —  /pokemon
-Battle card with toggleable strongest-moves panel.
+Battle card with move list and VGC meta panel.
 """
 
 import asyncio
@@ -12,16 +12,14 @@ from discord.ext import commands
 from utils import pokeapi
 from utils.autocomplete import pokemon_ac
 from utils.embeds import (
-    FOOTER, error_embed, type_badges, type_colour,
-    build_stat_lines, TYPE_EMOJI, DAMAGE_CLASS_EMOJI, make_footer,
+    error_embed, type_badges, type_colour,
+    build_stat_lines, TYPE_EMOJI, make_footer,
 )
 from utils.limitless import fetch_meta
 from utils.normalizer import normalize
 from utils.type_chart import group_by_multiplier
 
 # Lazy import to avoid circular — moves cog helpers imported inline in _go_moves
-
-DUELERS_ROLE_ID = 1483608023539650560
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -73,49 +71,6 @@ async def fetch_ability_effects(abilities: list[dict]) -> dict[str, str]:
                 out[slug] = text
                 break
     return out
-
-
-async def fetch_top_moves(move_entries: list) -> list[dict]:
-    candidates: list[str] = []
-    seen: set[str] = set()
-    for entry in move_entries:
-        slug = entry["move"]["name"]
-        if slug in seen:
-            continue
-        for vgd in entry.get("version_group_details", []):
-            if vgd["move_learn_method"]["name"] in ("level-up", "machine"):
-                candidates.append(slug)
-                seen.add(slug)
-                break
-        if len(candidates) >= 40:
-            break
-    if not candidates:
-        return []
-    results    = await asyncio.gather(*[pokeapi.get_move(s) for s in candidates])
-    with_power = [
-        m for m in results
-        if m and m.get("power") and m.get("damage_class", {}).get("name") != "status"
-    ]
-    with_power.sort(key=lambda m: m.get("power", 0), reverse=True)
-    return with_power[:6]
-
-
-# ── Move table ────────────────────────────────────────────────────────────────
-
-def _battle_move_lines(moves: list[dict]) -> str:
-    if not moves:
-        return "*No damaging moves found*"
-    lines = []
-    for m in moves:
-        mname = m["name"].replace("-", " ").title()
-        mtype = m.get("type", {}).get("name", "normal")
-        te    = TYPE_EMOJI.get(mtype, "❓")
-        dc    = m.get("damage_class", {}).get("name", "")
-        dce   = DAMAGE_CLASS_EMOJI.get(dc, "")
-        bp    = m.get("power") or "—"
-        acc   = f"{m['accuracy']}%" if m.get("accuracy") else "—"
-        lines.append(f"{te}{dce} **{mname}** · `{bp}bp` · `{acc}`")
-    return "\n".join(lines)
 
 
 # ── Embed builders ────────────────────────────────────────────────────────────
@@ -210,7 +165,10 @@ def build_meta_embed(
 ) -> discord.Embed:
     embed = discord.Embed(
         title=f"{name} — VGC Meta Usage",
-        description="Tournament usage stats from [Limitless VGC](https://limitlessvgc.com/)",
+        description=(
+            "> ⚠️ **Data may not reflect your current meta.** "
+            "Verify that listed moves, items, and abilities are actually available and legal in your format before using them."
+        ),
         colour=colour,
     )
 
@@ -253,21 +211,11 @@ class PokemonView(discord.ui.View):
         self.user_id          = user_id
         self.guild_id         = guild_id
         self.pokemon_arg      = pokemon_arg
-        self.top_moves:       list[dict]     = []
         self.ability_effects: dict[str, str] = ability_effects or {}
-        self.moves_shown      = False
         self._sync_buttons()
 
     def _sync_buttons(self):
         self.clear_items()
-        moves_btn = discord.ui.Button(
-            label="⚔️ Strongest Moves" if not self.moves_shown else "❌ Hide Moves",
-            style=discord.ButtonStyle.secondary if not self.moves_shown else discord.ButtonStyle.danger,
-            row=0,
-        )
-        moves_btn.callback = self._go_top_moves
-        self.add_item(moves_btn)
-
         movelist_btn = discord.ui.Button(
             label="📋 Move List",
             style=discord.ButtonStyle.secondary,
@@ -286,35 +234,6 @@ class PokemonView(discord.ui.View):
 
     def _guard(self, interaction: discord.Interaction) -> bool:
         return interaction.user.id == self.user_id
-
-    async def _go_top_moves(self, interaction: discord.Interaction):
-        if not self._guard(interaction):
-            return await interaction.response.send_message(
-                "Only the person who ran this command can do that.", ephemeral=True
-            )
-        await interaction.response.defer()
-
-        if not self.top_moves:
-            self.top_moves = await fetch_top_moves(self.data.get("moves", []))
-
-        self.moves_shown = not self.moves_shown
-        self._sync_buttons()
-
-        base_embed = build_battle_embed(self.data, self.ability_effects, self.guild_id, self.pokemon_arg)
-
-        if self.moves_shown:
-            warning = (
-                "> ⚠️ **Ranked by base power only** — does not account for accuracy, coverage, sets, or meta.\n"
-                f"> For real move advice, do some research or ping <@&{DUELERS_ROLE_ID}>!"
-            )
-            base_embed.add_field(name="\u200b", value=warning, inline=False)
-            base_embed.add_field(
-                name="⚔️ Strongest Moves",
-                value=_battle_move_lines(self.top_moves),
-                inline=False,
-            )
-
-        await interaction.edit_original_response(embed=base_embed, view=self)
 
     async def _go_moves(self, interaction: discord.Interaction):
         if not self._guard(interaction):
