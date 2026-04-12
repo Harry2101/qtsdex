@@ -24,6 +24,17 @@ from utils.type_chart import group_by_multiplier
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
+_FORM_SUFFIXES = (
+    "-mega-x", "-mega-y", "-mega",
+    "-primal", "-gmax", "-eternamax",
+)
+
+def _strip_form_suffix(slug: str) -> str | None:
+    for suffix in _FORM_SUFFIXES:
+        if slug.endswith(suffix):
+            return slug[: -len(suffix)]
+    return None
+
 def _sprite(data: dict) -> str | None:
     return (
         data.get("sprites", {}).get("other", {})
@@ -291,7 +302,18 @@ class PokemonCog(commands.Cog):
     async def pokemon_cmd(self, interaction: discord.Interaction, pokemon: str):
         await interaction.response.defer(thinking=True)
 
-        data = await pokeapi.get_pokemon(normalize(pokemon))
+        slug = normalize(pokemon)
+        data = await pokeapi.get_pokemon(slug)
+
+        fallback_notice: str | None = None
+        if not data:
+            base = _strip_form_suffix(slug)
+            if base and base != slug:
+                data = await pokeapi.get_pokemon(base)
+                if data:
+                    form_label = slug.replace("-", " ").title()
+                    fallback_notice = f"**{form_label}** doesn't exist yet — showing base form instead."
+
         if not data:
             return await interaction.followup.send(
                 embed=error_embed("Not Found", f"**{pokemon}** wasn't found. Try autocomplete."),
@@ -302,6 +324,9 @@ class PokemonCog(commands.Cog):
         ability_effects = await fetch_ability_effects(data.get("abilities", []))
         view = PokemonView(data=data, user_id=interaction.user.id, guild_id=gid, ability_effects=ability_effects, pokemon_arg=pokemon)
         embed = build_battle_embed(data, ability_effects, gid, pokemon)
+
+        if fallback_notice:
+            embed.description = f"> ℹ️ {fallback_notice}\n{embed.description}"
 
         await interaction.followup.send(embed=embed, view=view)
 
