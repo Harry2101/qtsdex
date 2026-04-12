@@ -144,14 +144,16 @@ def build_battle_embed(
         for entry in meta.get("abilities", []):
             meta_ability_names.add(entry["name"].lower().replace("-", " "))
 
+    only_one_ability = len(data["abilities"]) == 1
     ability_lines = []
     for a in data["abilities"]:
         slug   = a["ability"]["name"]
         label  = slug.replace("-", " ").title()
         tag    = " `H`" if a["is_hidden"] else ""
         effect = ability_effects.get(slug, "")
-        # ✅ if this ability appears in the meta usage data
-        highlight = "✅ " if slug.replace("-", " ") in meta_ability_names else ""
+        # ✅ if matched in meta data, or if meta is shown and this is the only ability
+        in_meta = slug.replace("-", " ") in meta_ability_names
+        highlight = "✅ " if (meta and (in_meta or only_one_ability)) else ""
         if effect:
             ability_lines.append(f"{highlight}**{label}**{tag} — {effect}")
         else:
