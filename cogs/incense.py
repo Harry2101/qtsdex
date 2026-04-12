@@ -2021,6 +2021,20 @@ class IncenseCog(commands.Cog):
             )
         await interaction.followup.send(embed=embed)
 
+    # ── autocomplete helpers ─────────────────────────────────────────────────
+
+    async def _group_name_autocomplete(
+        self,
+        interaction: discord.Interaction,
+        current: str,
+    ) -> list[app_commands.Choice[str]]:
+        gid = str(interaction.guild_id or "")
+        groups = await incense_db.get_groups(gid)
+        return [
+            app_commands.Choice(name=g, value=g)
+            for g in groups if current.lower() in g.lower()
+        ][:25]
+
     # ── /incense lock-all ────────────────────────────────────────────────────
 
     @incense.command(name="lock-all", description="Lock all active incense channels (or just a named group).")
@@ -2566,18 +2580,6 @@ class IncenseCog(commands.Cog):
         description="Manage named subsets of incense channels.",
         parent=incense,
     )
-
-    async def _group_name_autocomplete(
-        self,
-        interaction: discord.Interaction,
-        current: str,
-    ) -> list[app_commands.Choice[str]]:
-        gid = str(interaction.guild_id or "")
-        groups = await incense_db.get_groups(gid)
-        return [
-            app_commands.Choice(name=g, value=g)
-            for g in groups if current.lower() in g.lower()
-        ][:25]
 
     @group_group.command(name="create", description="Create a named incense group (max 3 per server).")
     @app_commands.describe(name="Group name (e.g. clan, main, grind)")
