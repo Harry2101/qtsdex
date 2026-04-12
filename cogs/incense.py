@@ -484,40 +484,90 @@ def _auto_lock_embed(channel, incense_type, total_spawns, guild_id: str = "") ->
     embed = discord.Embed(
         title="🔒  Incense Auto-Paused",
         description=(
-            f"A **{incense_type} Incense** was detected in {channel.mention}.\n\n"
+            f"A **{incense_type} Incense** was detected in {channel.mention}.\n"
             f"The channel has been **automatically locked** — "
-            f"Pokémon can't spawn here until the incense is resumed.\n\n"
-            f"*Waiting for the organizer to resume when all channels are ready.*"
+            f"Pokémon can't spawn here until the incense is resumed."
         ),
         colour=0xFF6B35,
     )
     if total_spawns:
         embed.add_field(name="📊 Total Spawns", value=str(total_spawns), inline=True)
-    embed.add_field(name="📍 Channel", value=channel.mention, inline=True)
     embed.set_footer(text=make_footer(guild_id, "Use !resume to start all incenses simultaneously"))
     return embed
 
 
 # ── Confirmation views ───────────────────────────────────────────────────────
 
-class _IncenseAddConfirmView(discord.ui.View):
+class _CountdownConfirmView(discord.ui.View):
+    """
+    Base class for confirmation views with a live countdown in the footer.
+
+    Subclasses must store the embed passed to send() as self._embed and call
+    start_countdown() after sending the ephemeral message.  The countdown
+    ticks at 5-second intervals and disables buttons + shows "Expired" when
+    time runs out.
+    """
+    _TIMEOUT  = 15
+    _INTERVAL = 5
+
+    def __init__(self, author: discord.User):
+        super().__init__(timeout=self._TIMEOUT)
+        self.author    = author
+        self.confirmed = False
+        self._msg: Optional[discord.InteractionMessage] = None
+        self._embed: Optional[discord.Embed] = None
+
+    def start_countdown(self, message: discord.InteractionMessage, embed: discord.Embed):
+        self._msg   = message
+        self._embed = embed
+        asyncio.ensure_future(self._tick())
+
+    async def _tick(self):
+        remaining = self._TIMEOUT
+        while remaining > 0 and not self.confirmed:
+            await asyncio.sleep(self._INTERVAL)
+            remaining -= self._INTERVAL
+            if self.confirmed or self._msg is None:
+                return
+            if remaining <= 0:
+                for item in self.children:
+                    item.disabled = True
+                self._embed.set_footer(text="⏰ Expired — please re-run the command.")
+                try:
+                    await self._msg.edit(embed=self._embed, view=self)
+                except (discord.NotFound, discord.HTTPException):
+                    pass
+                self.stop()
+            else:
+                self._embed.set_footer(text=f"⏳ Expires in {remaining}s — Incense Manager")
+                try:
+                    await self._msg.edit(embed=self._embed, view=self)
+                except (discord.NotFound, discord.HTTPException):
+                    pass
+
+    async def on_timeout(self):
+        # Handled by _tick; this is a safety fallback in case _tick wasn't started.
+        if not self.confirmed and self._msg is not None:
+            for item in self.children:
+                item.disabled = True
+            if self._embed:
+                self._embed.set_footer(text="⏰ Expired — please re-run the command.")
+                try:
+                    await self._msg.edit(embed=self._embed, view=self)
+                except (discord.NotFound, discord.HTTPException):
+                    pass
+        self.stop()
+
+
+class _IncenseAddConfirmView(_CountdownConfirmView):
     """Confirm for bulk incense add."""
     def __init__(self, author: discord.User, channels: list[discord.TextChannel],
                  guild_id: str, user_id: str, bot: commands.Bot):
-        super().__init__(timeout=15)
-        self.author   = author
+        super().__init__(author)
         self.channels = channels
         self.guild_id = guild_id
         self.user_id  = user_id
         self.bot      = bot
-        self.confirmed = False
-        self._message: Optional[discord.InteractionMessage] = None
-
-    async def on_timeout(self):
-        if not self.confirmed:
-            for item in self.children:
-                item.disabled = True
-            self.stop()
 
     @discord.ui.button(label="Confirm", style=discord.ButtonStyle.success, emoji="✅")
     async def confirm(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -583,20 +633,17 @@ class _IncenseAddConfirmView(discord.ui.View):
                 self.guild_id, self.user_id, "register",
                 f"Registered {len(added)} channel(s): {', '.join(ch.name for ch in added[:10])}"
             )
-        # Dismiss the ephemeral prompt and post the result publicly
-        await interaction.edit_original_response(
-            embed=discord.Embed(title="✅ Done!", description="Result posted below.", colour=0x57F287),
-            view=None,
-        )
+        await interaction.delete_original_response()
         await interaction.channel.send(embed=embed)
 
     @discord.ui.button(label="Cancel", style=discord.ButtonStyle.secondary, emoji="✖️")
     async def cancel(self, interaction: discord.Interaction, button: discord.ui.Button):
         if interaction.user.id != self.author.id:
             return await interaction.response.send_message("Not your confirmation.", ephemeral=True)
+        self.confirmed = True
         self.stop()
         await interaction.response.edit_message(
-            embed=discord.Embed(title="❌ Cancelled", description="No channels were registered.", colour=0xED4245),
+            embed=discord.Embed(title="❌ Cancelled", colour=0xED4245),
             view=None,
         )
 
@@ -725,22 +772,14 @@ class _StatusPaginatorView(discord.ui.View):
         self.stop()
 
 
-class _IncenseRemoveConfirmView(discord.ui.View):
+class _IncenseRemoveConfirmView(_CountdownConfirmView):
     """Confirm for bulk incense remove."""
     def __init__(self, author: discord.User, channels: list[discord.TextChannel],
                  guild_id: str, user_id: str):
-        super().__init__(timeout=15)
-        self.author   = author
+        super().__init__(author)
         self.channels = channels
         self.guild_id = guild_id
         self.user_id  = user_id
-        self.confirmed = False
-
-    async def on_timeout(self):
-        if not self.confirmed:
-            for item in self.children:
-                item.disabled = True
-            self.stop()
 
     @discord.ui.button(label="Remove", style=discord.ButtonStyle.danger, emoji="🗑️")
     async def confirm(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -775,20 +814,17 @@ class _IncenseRemoveConfirmView(discord.ui.View):
                 self.guild_id, self.user_id, "bulk_unregister",
                 f"Removed {len(removed)} channel(s): {', '.join(ch.name for ch in removed[:10])}"
             )
-        # Dismiss the ephemeral prompt and post the result publicly
-        await interaction.edit_original_response(
-            embed=discord.Embed(title="✅ Done!", description="Result posted below.", colour=0x57F287),
-            view=None,
-        )
+        await interaction.delete_original_response()
         await interaction.channel.send(embed=embed)
 
     @discord.ui.button(label="Cancel", style=discord.ButtonStyle.secondary, emoji="✖️")
     async def cancel(self, interaction: discord.Interaction, button: discord.ui.Button):
         if interaction.user.id != self.author.id:
             return await interaction.response.send_message("Not your confirmation.", ephemeral=True)
+        self.confirmed = True
         self.stop()
         await interaction.response.edit_message(
-            embed=discord.Embed(title="❌ Cancelled", description="No channels were removed.", colour=0xED4245),
+            embed=discord.Embed(title="❌ Cancelled", colour=0xED4245),
             view=None,
         )
 
@@ -1305,10 +1341,7 @@ class IncenseCog(commands.Cog):
         )
         embed = discord.Embed(
             title="✅ Operation Dex Bot Set",
-            description=(
-                f"I'll now watch for incense activations from bot ID `{bid}`.\n"
-                f"Make sure this bot is in the server!"
-            ),
+            description=f"Now watching for incense activations from bot ID `{bid}`.",
             colour=0x57F287,
         )
         embed.set_footer(text=make_footer(gid, "Incense Manager"))
@@ -1426,16 +1459,16 @@ class IncenseCog(commands.Cog):
             title="⚠️  Confirm Incense Channel Registration",
             description=(
                 f"**{len(unique)}** channel{'s' if len(unique) != 1 else ''} will be registered:\n\n"
-                f"{preview}\n\n"
-                "Each channel will receive a setup notification.\n"
-                "*Click Confirm within 15 seconds.*"
+                f"{preview}"
             ),
             colour=0xFEE75C,
         )
-        embed.set_footer(text=make_footer(guild_id, "Incense Manager"))
+        embed.set_footer(text="⏳ Expires in 15s — Incense Manager")
 
         view = _IncenseAddConfirmView(interaction.user, unique, guild_id, str(interaction.user.id), self.bot)
         await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
+        msg = await interaction.original_response()
+        view.start_countdown(msg, embed)
 
     # ── /incense remove ──────────────────────────────────────────────────────
 
@@ -1519,15 +1552,16 @@ class IncenseCog(commands.Cog):
             title="⚠️  Confirm Incense Channel Removal",
             description=(
                 f"**{len(unique)}** channel{'s' if len(unique) != 1 else ''} will be unregistered:\n\n"
-                f"{preview}\n\n"
-                "*Click Remove within 15 seconds.*"
+                f"{preview}"
             ),
             colour=0xED4245,
         )
-        embed.set_footer(text=make_footer(guild_id, "Incense Manager"))
+        embed.set_footer(text="⏳ Expires in 15s — Incense Manager")
 
         view = _IncenseRemoveConfirmView(interaction.user, unique, guild_id, str(interaction.user.id))
         await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
+        msg = await interaction.original_response()
+        view.start_countdown(msg, embed)
 
     # ── /incense lock ────────────────────────────────────────────────────────
 
