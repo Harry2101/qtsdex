@@ -138,22 +138,22 @@ def build_battle_embed(
         inline=False,
     )
 
-    # Build set of meta ability names (lowercased) for cross-referencing
-    meta_ability_names: set[str] = set()
+    # Top meta ability slug (first = highest usage), or sole ability if only one
+    top_meta_ability: str | None = None
     if meta:
-        for entry in meta.get("abilities", []):
-            meta_ability_names.add(entry["name"].lower().replace("-", " "))
+        abilities = data["abilities"]
+        if len(abilities) == 1:
+            top_meta_ability = abilities[0]["ability"]["name"].replace("-", " ")
+        elif meta.get("abilities"):
+            top_meta_ability = meta["abilities"][0]["name"].lower().replace("-", " ")
 
-    only_one_ability = len(data["abilities"]) == 1
     ability_lines = []
     for a in data["abilities"]:
         slug   = a["ability"]["name"]
         label  = slug.replace("-", " ").title()
         tag    = " `H`" if a["is_hidden"] else ""
         effect = ability_effects.get(slug, "")
-        # ✅ if matched in meta data, or if meta is shown and this is the only ability
-        in_meta = slug.replace("-", " ") in meta_ability_names
-        highlight = "✅ " if (meta and (in_meta or only_one_ability)) else ""
+        highlight = "✅ " if top_meta_ability and slug.replace("-", " ") == top_meta_ability else ""
         if effect:
             ability_lines.append(f"{highlight}**{label}**{tag} — {effect}")
         else:
