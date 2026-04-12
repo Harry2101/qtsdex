@@ -129,14 +129,16 @@ class DeleteConfirmView(discord.ui.View):
 
     def __init__(
         self,
-        interaction: discord.Interaction,
-        channels:    list[discord.abc.GuildChannel],
-        guild_id:    str,
+        interaction:       discord.Interaction,
+        channels:          list[discord.abc.GuildChannel],
+        guild_id:          str,
+        delete_categories: list[discord.CategoryChannel] | None = None,
     ):
         super().__init__(timeout=60)
-        self.author   = interaction.user
-        self.channels = channels
-        self.guild_id = guild_id
+        self.author            = interaction.user
+        self.channels          = channels
+        self.guild_id          = guild_id
+        self.delete_categories = delete_categories or []
 
     @discord.ui.button(label="Delete", style=discord.ButtonStyle.danger, emoji="🗑️")
     async def confirm(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -149,7 +151,9 @@ class DeleteConfirmView(discord.ui.View):
         deleted: list[str] = []
         failed:  list[str] = []
 
-        for i, ch in enumerate(self.channels):
+        all_items: list[discord.abc.GuildChannel] = list(self.channels) + list(self.delete_categories)
+
+        for i, ch in enumerate(all_items):
             try:
                 name = ch.name
                 await _retry_api(
@@ -159,7 +163,7 @@ class DeleteConfirmView(discord.ui.View):
             except Exception as e:
                 failed.append(f"#{ch.name}: {e}")
             # Small delay to avoid rate limits on bulk operations
-            if (i + 1) % 5 == 0 and i + 1 < len(self.channels):
+            if (i + 1) % 5 == 0 and i + 1 < len(all_items):
                 await asyncio.sleep(1)
 
         embed = discord.Embed(
@@ -290,11 +294,14 @@ class ChannelsCog(commands.Cog):
 
     # ── /channel delete ──────────────────────────────────────────────────────
 
-    @channel.command(name="delete", description="Delete one or a range of channels.")
+    @channel.command(name="delete", description="Delete channels: single, range, and/or whole categories.")
     @app_commands.describe(
         channel="Single channel to delete",
         from_channel="Start of range to delete (inclusive)",
         to_channel="End of range to delete (inclusive)",
+        category="Delete all channels in this category (also deletes the category itself)",
+        category2="Additional category to delete",
+        category3="Additional category to delete",
     )
     async def ch_delete(
         self,
@@ -302,6 +309,9 @@ class ChannelsCog(commands.Cog):
         channel:      discord.TextChannel | None = None,
         from_channel: discord.TextChannel | None = None,
         to_channel:   discord.TextChannel | None = None,
+        category:     discord.CategoryChannel | None = None,
+        category2:    discord.CategoryChannel | None = None,
+        category3:    discord.CategoryChannel | None = None,
     ):
         if not _is_admin(interaction):
             return await interaction.response.send_message(
@@ -312,12 +322,27 @@ class ChannelsCog(commands.Cog):
 
         gid = str(interaction.guild_id or "")
 
-        # Single channel mode
-        if channel and not from_channel and not to_channel:
-            targets = [channel]
+        targets: list[discord.abc.GuildChannel] = []
+        delete_categories: list[discord.CategoryChannel] = []
+
+        # Collect category channels
+        for cat in [category, category2, category3]:
+            if cat is None:
+                continue
+            if cat in delete_categories:
+                continue
+            delete_categories.append(cat)
+            for ch in sorted(cat.channels, key=lambda c: c.position):
+                if ch not in targets:
+                    targets.append(ch)
+
+        # Single channel
+        if channel:
+            if channel not in targets:
+                targets.append(channel)
+
         # Range mode
-        elif from_channel and to_channel and not channel:
-            # Find all channels between from and to (by position) in same category
+        if from_channel and to_channel:
             cat = from_channel.category
             pool = [
                 ch for ch in interaction.guild.text_channels
@@ -330,45 +355,59 @@ class ChannelsCog(commands.Cog):
                 end_idx   = next(i for i, c in enumerate(pool) if c.id == to_channel.id)
             except StopIteration:
                 return await interaction.response.send_message(
-                    "Could not find both channels in the same category.", ephemeral=True
+                    "Could not find both range channels in the same category.", ephemeral=True
                 )
 
             if start_idx > end_idx:
                 start_idx, end_idx = end_idx, start_idx
 
-            targets = pool[start_idx : end_idx + 1]
-        else:
+            for ch in pool[start_idx : end_idx + 1]:
+                if ch not in targets:
+                    targets.append(ch)
+
+        elif from_channel or to_channel:
             return await interaction.response.send_message(
-                "Provide either `channel` (single) **or** `from_channel` + `to_channel` (range).",
+                "Provide **both** `from_channel` and `to_channel` for a range.",
                 ephemeral=True,
             )
 
-        if not targets:
-            return await interaction.response.send_message("No channels matched.", ephemeral=True)
+        if not targets and not delete_categories:
+            return await interaction.response.send_message(
+                "Provide at least one of: `channel`, `from_channel`+`to_channel`, or a `category`.",
+                ephemeral=True,
+            )
+
+        if not targets and delete_categories:
+            # Categories with no channels — still valid, just deleting empty categories
+            pass
 
         if len(targets) > MAX_CHANNELS:
             return await interaction.response.send_message(
                 f"Cannot delete more than {MAX_CHANNELS} channels at once. "
-                f"The range you selected has {len(targets)} channels.",
+                f"The selection has {len(targets)} channels.",
                 ephemeral=True,
             )
 
-        preview = ", ".join(ch.mention for ch in targets[:20])
-        if len(targets) > 20:
-            preview += f" *+{len(targets) - 20} more*"
+        # Build preview
+        desc_lines = []
+        if delete_categories:
+            cat_names = ", ".join(f"**{c.name}**" for c in delete_categories)
+            desc_lines.append(f"**Categories:** {cat_names} *(categories will also be deleted)*")
+        if targets:
+            preview = ", ".join(ch.mention for ch in targets[:20])
+            if len(targets) > 20:
+                preview += f" *+{len(targets) - 20} more*"
+            desc_lines.append(f"**Channels ({len(targets)}):** {preview}")
+        desc_lines.append("\n*This cannot be undone. All messages in these channels will be lost.*")
 
         embed = discord.Embed(
-            title="⚠️  Confirm Channel Deletion",
-            description=(
-                f"You are about to **permanently delete {len(targets)} channel{'s' if len(targets) > 1 else ''}**:\n\n"
-                f"{preview}\n\n"
-                f"*This cannot be undone. All messages in these channels will be lost.*"
-            ),
+            title="⚠️  Confirm Deletion",
+            description="\n".join(desc_lines),
             colour=0xED4245,
         )
         embed.set_footer(text=make_footer(gid))
 
-        view = DeleteConfirmView(interaction, targets, gid)
+        view = DeleteConfirmView(interaction, targets, gid, delete_categories=delete_categories)
         await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
 
 
