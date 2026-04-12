@@ -646,15 +646,13 @@ class HelpCog(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
 
-    @app_commands.command(name="help", description="Show all available commands.")
-    async def help_cmd(self, interaction: discord.Interaction):
-        gid = str(interaction.guild_id or "")
-        bot_name = get_bot_name(gid)
-        is_qt = gid == "1477887017034584248"
-        show_incense = is_qt and await _can_see_incense(interaction)
-        admin = _is_admin(interaction)
-
-        # Build the list of available sections for this user
+    async def _build_sections(
+        self,
+        gid: str,
+        admin: bool,
+        show_incense: bool,
+    ) -> list[tuple[str, str, discord.Embed]]:
+        """Build the ordered section list for the given user's permissions."""
         sections: list[tuple[str, str, discord.Embed]] = [
             _section_pokedex(gid),
             _section_types(gid),
@@ -673,11 +671,52 @@ class HelpCog(commands.Cog):
             sections.append(_section_pokemon_lists(gid))
         sections.append(_section_changelog(gid))
         sections.append(_section_tips(gid))
+        return sections
 
-        home_embed = _section_home(bot_name, sections, gid)
-        view = HelpView(sections, bot_name, gid, interaction.user.id)
+    async def _section_autocomplete(
+        self,
+        interaction: discord.Interaction,
+        current: str,
+    ) -> list[app_commands.Choice[str]]:
+        gid          = str(interaction.guild_id or "")
+        is_qt        = gid == "1477887017034584248"
+        admin        = _is_admin(interaction)
+        show_incense = is_qt and await _can_see_incense(interaction)
+        sections     = await self._build_sections(gid, admin, show_incense)
+        choices = [app_commands.Choice(name="Home — overview of all sections", value="home")]
+        for emoji, title, _ in sections:
+            choices.append(app_commands.Choice(name=f"{emoji} {title}", value=title))
+        if current:
+            choices = [c for c in choices if current.lower() in c.name.lower()]
+        return choices[:25]
 
-        await interaction.response.send_message(embed=home_embed, view=view, ephemeral=False)
+    @app_commands.command(name="help", description="Show all available commands.")
+    @app_commands.describe(section="Jump straight to a specific section (optional)")
+    @app_commands.autocomplete(section=_section_autocomplete)
+    async def help_cmd(self, interaction: discord.Interaction, section: Optional[str] = None):
+        gid          = str(interaction.guild_id or "")
+        bot_name     = get_bot_name(gid)
+        is_qt        = gid == "1477887017034584248"
+        show_incense = is_qt and await _can_see_incense(interaction)
+        admin        = _is_admin(interaction)
+
+        sections = await self._build_sections(interaction, gid, admin, show_incense)
+        view     = HelpView(sections, bot_name, gid, interaction.user.id)
+
+        # If a section was requested, find and open it directly
+        if section:
+            if section == "home":
+                embed = _section_home(bot_name, sections, gid)
+            else:
+                match = next(
+                    (e for _, title, e in sections if title.lower() == section.lower()),
+                    None,
+                )
+                embed = match if match is not None else _section_home(bot_name, sections, gid)
+        else:
+            embed = _section_home(bot_name, sections, gid)
+
+        await interaction.response.send_message(embed=embed, view=view, ephemeral=False)
 
 
 async def setup(bot: commands.Bot):
