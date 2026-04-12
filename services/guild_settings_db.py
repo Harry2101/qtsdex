@@ -135,7 +135,8 @@ def get_bot_name(guild_id: str) -> str:
 def make_footer(guild_id: str = "", suffix: str = "") -> str:
     """Build a branded embed footer string for the given guild."""
     name = get_bot_name(guild_id) if guild_id else _DEFAULT_NAME
-    return f"{name}  •  {suffix}"
+    suffix = suffix.strip().rstrip("•").strip()
+    return f"{name}  •  {suffix}" if suffix else name
 
 
 async def set_bot_name(guild_id: str, name: str) -> None:

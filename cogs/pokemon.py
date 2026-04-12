@@ -187,7 +187,7 @@ def build_battle_embed(
         inline=False,
     )
 
-    suffix = f"/pokemon {pokemon_arg}  •  " if pokemon_arg else ""
+    suffix = f"/pokemon {pokemon_arg}" if pokemon_arg else ""
     embed.set_footer(text=make_footer(guild_id, suffix))
     return embed
 
