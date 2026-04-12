@@ -163,15 +163,32 @@ def _section_starboard(gid: str) -> tuple[str, str, discord.Embed]:
 def _section_channels(gid: str) -> tuple[str, str, discord.Embed]:
     embed = discord.Embed(
         title="🔧  Channel Management  *(admin only)*",
-        description=(
-            "`/channel create count: prefix: start_number:`  — Bulk-create channels\n"
-            "   ↳ e.g. `/channel create count:20 prefix:♡- start_number:30`\n"
-            "   ↳ Optional: `category:` and `after:` for positioning\n\n"
-            "`/channel delete channel:`  — Delete a single channel\n\n"
-            "`/channel delete from_channel: to_channel:`  — Delete a range of channels\n"
-            "   ↳ Both modes require confirmation before deletion"
-        ),
         colour=0x5865F2,
+    )
+    embed.add_field(
+        name="✨ Create",
+        value=(
+            "`/channel create count: prefix:`  — Bulk-create numbered text channels\n"
+            "   ↳ `start_number:` — starting number (default 1)\n"
+            "   ↳ `category:` — create inside a specific category\n"
+            "   ↳ `after:` — insert channels after a specific channel\n"
+            "   ↳ e.g. `/channel create count:20 prefix:♡- start_number:30 category:#hunts`"
+        ),
+        inline=False,
+    )
+    embed.add_field(
+        name="🗑️ Delete",
+        value=(
+            "`/channel delete channel:`  — Delete a single channel\n\n"
+            "`/channel delete from_channel: to_channel:`  — Delete a consecutive range\n"
+            "   ↳ Range is scoped to channels in the same category, ordered by position\n\n"
+            "`/channel delete category:`  — Delete all channels in a category + the category itself\n"
+            "   ↳ `category2:` `category3:` — delete up to **3 categories** at once\n\n"
+            "   ↳ All options can be **combined** in a single command\n"
+            "   ↳ e.g. delete a range *and* two whole categories in one go\n"
+            "   ↳ A confirmation embed is shown before anything is deleted"
+        ),
+        inline=False,
     )
     embed.set_footer(text=make_footer(gid))
     return ("🔧", "Channel Management", embed)

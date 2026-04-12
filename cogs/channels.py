@@ -408,7 +408,7 @@ class ChannelsCog(commands.Cog):
         embed.set_footer(text=make_footer(gid))
 
         view = DeleteConfirmView(interaction, targets, gid, delete_categories=delete_categories)
-        await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
+        await interaction.response.send_message(embed=embed, view=view)
 
 
 async def setup(bot: commands.Bot):
