@@ -10,8 +10,11 @@ Prefix commands (incense manager role or bot owner only):
 Slash commands (grouped under /incense):
   /incense add        — register channel(s) as incense channels
   /incense remove     — unregister a channel
-  /incense lock       — lock a specific channel (pause its incense)
-  /incense unlock     — unlock a specific channel (resume its incense)
+  /incense lock       — lock one or more channels (single, category, range)
+  /incense unlock     — unlock one or more channels (same flexible selectors)
+  /incense lock-all   — lock all active channels at once (slash equiv. of !pause [group])
+  /incense unlock-all — unlock all paused channels at once (slash equiv. of !resume [group])
+  /incense channel-info — detailed state/info for a channel with Lock/Unlock buttons
   /incense recursive  — set every channel after this one as an inc channel
   /incense status     — show all incense channels and their states
   /incense clear      — clear all incense data for a channel
@@ -780,6 +783,103 @@ class _IncenseRemoveConfirmView(discord.ui.View):
         )
 
 
+# ── Channel-info button view ──────────────────────────────────────────────────
+
+class _ChannelInfoView(discord.ui.View):
+    """Lock / Unlock buttons for /incense channel-info."""
+
+    def __init__(
+        self,
+        author_id: int,
+        channel: discord.TextChannel,
+        guild_id: str,
+        opdex_id: int,
+        is_locked: bool,
+    ):
+        super().__init__(timeout=60)
+        self.author_id = author_id
+        self.channel   = channel
+        self.guild_id  = guild_id
+        self.opdex_id  = opdex_id
+        # Show only the relevant button based on current state
+        if is_locked:
+            self.remove_item(self.btn_lock)
+        else:
+            self.remove_item(self.btn_unlock)
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if interaction.user.id != self.author_id:
+            await interaction.response.send_message("Not your panel.", ephemeral=True)
+            return False
+        return True
+
+    async def on_timeout(self):
+        for item in self.children:
+            item.disabled = True
+        self.stop()
+
+    @discord.ui.button(label="Lock", style=discord.ButtonStyle.danger, emoji="🔒")
+    async def btn_lock(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.defer()
+        ch = self.channel
+        cid = str(ch.id)
+        if _is_channel_locked(ch, self.opdex_id):
+            await interaction.followup.send(f"ℹ️ {ch.mention} is already locked.", ephemeral=True)
+            return
+        ok = await _lock_channel(ch, self.opdex_id)
+        await incense_db.set_paused(self.guild_id, cid, True)
+        if ok:
+            await incense_db.log_action(self.guild_id, str(interaction.user.id), "lock", f"Locked #{ch.name} via channel-info")
+            button.disabled = True
+            # Swap to show unlock button enabled
+            self.btn_unlock.disabled = False
+            await interaction.edit_original_response(view=self)
+            await interaction.followup.send(
+                embed=discord.Embed(title="🔒 Locked", description=f"{ch.mention} has been locked.", colour=0xFF6B35),
+                ephemeral=True,
+            )
+        else:
+            await interaction.followup.send(
+                embed=discord.Embed(title="❌ Lock Failed", description="Check my **Manage Channel** / **Manage Roles** permissions.", colour=0xED4245),
+                ephemeral=True,
+            )
+
+    @discord.ui.button(label="Unlock", style=discord.ButtonStyle.success, emoji="🔓")
+    async def btn_unlock(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.defer()
+        ch = self.channel
+        cid = str(ch.id)
+        if not _is_channel_locked(ch, self.opdex_id):
+            await interaction.followup.send(f"ℹ️ {ch.mention} is already unlocked.", ephemeral=True)
+            return
+        ok = await _unlock_channel(ch, self.opdex_id)
+        await incense_db.set_paused(self.guild_id, cid, False)
+        if ok:
+            await incense_db.log_action(self.guild_id, str(interaction.user.id), "unlock", f"Unlocked #{ch.name} via channel-info")
+            button.disabled = True
+            self.btn_lock.disabled = False
+            await interaction.edit_original_response(view=self)
+            await interaction.followup.send(
+                embed=discord.Embed(title="🔓 Unlocked", description=f"{ch.mention} is now live. 🎉", colour=0x57F287),
+                ephemeral=True,
+            )
+            try:
+                live_embed = discord.Embed(
+                    title="▶️ Incense Live!",
+                    description="The incense is now **active** — Pokémon are spawning! Good luck! 🎉",
+                    colour=0x57F287,
+                )
+                live_embed.set_footer(text=make_footer(self.guild_id, "Use !pause to pause all incenses"))
+                await ch.send(embed=live_embed)
+            except discord.Forbidden:
+                pass
+        else:
+            await interaction.followup.send(
+                embed=discord.Embed(title="❌ Unlock Failed", description="Check my **Manage Channel** / **Manage Roles** permissions.", colour=0xED4245),
+                ephemeral=True,
+            )
+
+
 # ── Cog ───────────────────────────────────────────────────────────────────────
 
 class IncenseCog(commands.Cog):
@@ -1402,124 +1502,340 @@ class IncenseCog(commands.Cog):
 
     # ── /incense lock ────────────────────────────────────────────────────────
 
-    @incense.command(name="lock", description="Lock a specific incense channel.")
-    @app_commands.describe(channel="Channel to lock (defaults to current channel)")
+    @incense.command(name="lock", description="Lock one or more incense channels.")
+    @app_commands.describe(
+        channel="A single channel to lock (defaults to current channel if nothing else given)",
+        category="Lock all channels in this category",
+        category2="Second category (optional)",
+        category3="Third category (optional)",
+        from_channel="Start of a channel range (inclusive)",
+        to_channel="End of a channel range (inclusive)",
+    )
     async def inc_lock(
         self,
-        interaction: discord.Interaction,
-        channel:     Optional[discord.TextChannel] = None,
+        interaction:  discord.Interaction,
+        channel:      Optional[discord.TextChannel]     = None,
+        category:     Optional[discord.CategoryChannel] = None,
+        category2:    Optional[discord.CategoryChannel] = None,
+        category3:    Optional[discord.CategoryChannel] = None,
+        from_channel: Optional[discord.TextChannel]     = None,
+        to_channel:   Optional[discord.TextChannel]     = None,
     ):
         if not _is_qt_guild(interaction):
             return await interaction.response.send_message(_NOT_QT_MSG, ephemeral=True)
         if not await _is_authorised(interaction):
             return await interaction.response.send_message("🚫 You need the **Incense Manager** role.", ephemeral=True)
 
-        ch       = channel or interaction.channel
         guild_id = str(interaction.guild_id)
         opdex_id = await _get_opdex_id(guild_id)
 
-        if not await incense_db.is_incense_channel(guild_id, str(ch.id)):
-            return await interaction.response.send_message(
-                f"⚠️ {ch.mention} is not a registered incense channel.", ephemeral=True
+        # Build target list
+        targets: list[discord.TextChannel] = []
+        if channel:
+            targets.append(channel)
+        for cat in [category, category2, category3]:
+            if cat:
+                targets.extend(
+                    ch for ch in cat.channels
+                    if isinstance(ch, discord.TextChannel) and ch not in targets
+                )
+        if from_channel and to_channel:
+            pool = sorted(
+                [ch for ch in interaction.guild.text_channels if ch.category == from_channel.category],
+                key=lambda c: c.position,
             )
-        if _is_channel_locked(ch, opdex_id):
+            try:
+                si = next(i for i, c in enumerate(pool) if c.id == from_channel.id)
+                ei = next(i for i, c in enumerate(pool) if c.id == to_channel.id)
+            except StopIteration:
+                return await interaction.response.send_message(
+                    "❌ Could not resolve range — ensure both channels are in the same category.", ephemeral=True
+                )
+            if si > ei:
+                si, ei = ei, si
+            for ch in pool[si:ei + 1]:
+                if ch not in targets:
+                    targets.append(ch)
+        elif from_channel or to_channel:
             return await interaction.response.send_message(
-                f"ℹ️ {ch.mention} is already locked.", ephemeral=True
+                "⚠️ Provide **both** `from_channel` and `to_channel` for a range.", ephemeral=True
             )
 
+        # Default: current channel
+        if not targets:
+            targets.append(interaction.channel)
+
+        # Deduplicate
+        seen: set[int] = set()
+        unique = [ch for ch in targets if not (ch.id in seen or seen.add(ch.id))]
+
+        # Single-channel fast path (original behaviour)
+        if len(unique) == 1:
+            ch = unique[0]
+            if not await incense_db.is_incense_channel(guild_id, str(ch.id)):
+                return await interaction.response.send_message(
+                    f"⚠️ {ch.mention} is not a registered incense channel.", ephemeral=True
+                )
+            if _is_channel_locked(ch, opdex_id):
+                return await interaction.response.send_message(
+                    f"ℹ️ {ch.mention} is already locked.", ephemeral=True
+                )
+            await interaction.response.defer()
+            success = await _lock_channel(ch, opdex_id)
+            await incense_db.set_paused(guild_id, str(ch.id), True)
+            if success:
+                await incense_db.log_action(guild_id, str(interaction.user.id), "lock", f"Locked #{ch.name}")
+                embed = discord.Embed(
+                    title="🔒 Channel Locked",
+                    description=f"{ch.mention} has been locked. Pokémon cannot spawn here.",
+                    colour=0xFF6B35,
+                )
+                embed.set_footer(text=make_footer(guild_id, "Incense Manager"))
+                await interaction.followup.send(embed=embed)
+            else:
+                err = discord.Embed(
+                    title="❌ Lock Failed",
+                    description=(
+                        f"I couldn't lock {ch.mention}.\n\n"
+                        "Please check that I have **Manage Channel** and **Manage Roles** permissions."
+                    ),
+                    colour=0xED4245,
+                )
+                err.set_footer(text=make_footer(guild_id, "Incense Manager"))
+                await interaction.followup.send(embed=err, ephemeral=True)
+            return
+
+        # Multi-channel path
         await interaction.response.defer()
-        success = await _lock_channel(ch, opdex_id)
-        await incense_db.set_paused(guild_id, str(ch.id), True)
+        registered_ids = set(await incense_db.get_channels(guild_id))
+        locked: list[str]       = []
+        already: list[str]      = []
+        failed: list[str]       = []
+        not_registered: list[str] = []
 
-        if success:
+        async def _do_lock(ch: discord.TextChannel):
+            cid = str(ch.id)
+            if cid not in registered_ids:
+                not_registered.append(cid)
+                return
+            if _is_channel_locked(ch, opdex_id):
+                already.append(cid)
+                await incense_db.set_paused(guild_id, cid, True)
+                return
+            ok = await _lock_channel(ch, opdex_id)
+            if ok:
+                await incense_db.set_paused(guild_id, cid, True)
+                locked.append(cid)
+            else:
+                failed.append(cid)
+
+        await asyncio.gather(*[_do_lock(ch) for ch in unique])
+
+        if locked:
             await incense_db.log_action(
                 guild_id, str(interaction.user.id), "lock",
-                f"Locked #{ch.name}"
+                f"Locked {len(locked)} channel(s): {', '.join(interaction.guild.get_channel(int(c)).name for c in locked[:10] if interaction.guild.get_channel(int(c)))}"
             )
-            embed = discord.Embed(
-                title="🔒 Channel Locked",
-                description=f"{ch.mention} has been locked. Pokémon cannot spawn here.",
-                colour=0xFF6B35,
-            )
-            embed.set_footer(text=make_footer(guild_id, "Incense Manager"))
-            await interaction.followup.send(embed=embed)
-        else:
-            err_embed = discord.Embed(
-                title="❌ Lock Failed",
-                description=(
-                    f"I couldn't lock {ch.mention}.\n\n"
-                    "Please check that I have **Manage Channel** and **Manage Roles** permissions."
-                ),
-                colour=0xED4245,
-            )
-            err_embed.set_footer(text=make_footer(guild_id, "Incense Manager"))
-            await interaction.followup.send(embed=err_embed, ephemeral=True)
+
+        colour = 0xED4245 if failed else (0xFEE75C if not locked else 0xFF6B35)
+        embed = discord.Embed(title="🔒 Channels Locked", colour=colour)
+        parts = []
+        if locked:   parts.append(f"🔒 **{len(locked)}** locked")
+        if already:  parts.append(f"⏭️ **{len(already)}** already locked")
+        if failed:   parts.append(f"⚠️ **{len(failed)}** failed")
+        if not_registered: parts.append(f"❓ **{len(not_registered)}** not registered")
+        embed.description = "  •  ".join(parts) if parts else "Nothing to do."
+
+        guild = interaction.guild
+        if locked:
+            _add_two_col(embed, f"🔒 Locked ({len(locked)})", [f"<#{c}>" for c in _sort_channel_ids(guild, locked)])
+        if already:
+            _add_two_col(embed, f"⏭️ Already locked ({len(already)})", [f"<#{c}>" for c in _sort_channel_ids(guild, already)])
+        if failed:
+            _add_two_col(embed, f"⚠️ Failed ({len(failed)})", [f"<#{c}>" for c in _sort_channel_ids(guild, failed)])
+        if not_registered:
+            _add_two_col(embed, f"❓ Not registered ({len(not_registered)})", [f"<#{c}>" for c in not_registered])
+        embed.set_footer(text=make_footer(guild_id, "Incense Manager"))
+        await interaction.followup.send(embed=embed)
 
     # ── /incense unlock ──────────────────────────────────────────────────────
 
-    @incense.command(name="unlock", description="Unlock a specific incense channel.")
-    @app_commands.describe(channel="Channel to unlock (defaults to current channel)")
+    @incense.command(name="unlock", description="Unlock one or more incense channels.")
+    @app_commands.describe(
+        channel="A single channel to unlock (defaults to current channel if nothing else given)",
+        category="Unlock all channels in this category",
+        category2="Second category (optional)",
+        category3="Third category (optional)",
+        from_channel="Start of a channel range (inclusive)",
+        to_channel="End of a channel range (inclusive)",
+    )
     async def inc_unlock(
         self,
-        interaction: discord.Interaction,
-        channel:     Optional[discord.TextChannel] = None,
+        interaction:  discord.Interaction,
+        channel:      Optional[discord.TextChannel]     = None,
+        category:     Optional[discord.CategoryChannel] = None,
+        category2:    Optional[discord.CategoryChannel] = None,
+        category3:    Optional[discord.CategoryChannel] = None,
+        from_channel: Optional[discord.TextChannel]     = None,
+        to_channel:   Optional[discord.TextChannel]     = None,
     ):
         if not _is_qt_guild(interaction):
             return await interaction.response.send_message(_NOT_QT_MSG, ephemeral=True)
         if not await _is_authorised(interaction):
             return await interaction.response.send_message("🚫 You need the **Incense Manager** role.", ephemeral=True)
 
-        ch       = channel or interaction.channel
         guild_id = str(interaction.guild_id)
         opdex_id = await _get_opdex_id(guild_id)
 
-        if not await incense_db.is_incense_channel(guild_id, str(ch.id)):
-            return await interaction.response.send_message(
-                f"⚠️ {ch.mention} is not a registered incense channel.", ephemeral=True
+        # Build target list
+        targets: list[discord.TextChannel] = []
+        if channel:
+            targets.append(channel)
+        for cat in [category, category2, category3]:
+            if cat:
+                targets.extend(
+                    ch for ch in cat.channels
+                    if isinstance(ch, discord.TextChannel) and ch not in targets
+                )
+        if from_channel and to_channel:
+            pool = sorted(
+                [ch for ch in interaction.guild.text_channels if ch.category == from_channel.category],
+                key=lambda c: c.position,
             )
-        if not _is_channel_locked(ch, opdex_id):
+            try:
+                si = next(i for i, c in enumerate(pool) if c.id == from_channel.id)
+                ei = next(i for i, c in enumerate(pool) if c.id == to_channel.id)
+            except StopIteration:
+                return await interaction.response.send_message(
+                    "❌ Could not resolve range — ensure both channels are in the same category.", ephemeral=True
+                )
+            if si > ei:
+                si, ei = ei, si
+            for ch in pool[si:ei + 1]:
+                if ch not in targets:
+                    targets.append(ch)
+        elif from_channel or to_channel:
             return await interaction.response.send_message(
-                f"ℹ️ {ch.mention} is already unlocked.", ephemeral=True
+                "⚠️ Provide **both** `from_channel` and `to_channel` for a range.", ephemeral=True
             )
 
+        # Default: current channel
+        if not targets:
+            targets.append(interaction.channel)
+
+        # Deduplicate
+        seen: set[int] = set()
+        unique = [ch for ch in targets if not (ch.id in seen or seen.add(ch.id))]
+
+        # Single-channel fast path (original behaviour)
+        if len(unique) == 1:
+            ch = unique[0]
+            if not await incense_db.is_incense_channel(guild_id, str(ch.id)):
+                return await interaction.response.send_message(
+                    f"⚠️ {ch.mention} is not a registered incense channel.", ephemeral=True
+                )
+            if not _is_channel_locked(ch, opdex_id):
+                return await interaction.response.send_message(
+                    f"ℹ️ {ch.mention} is already unlocked.", ephemeral=True
+                )
+            await interaction.response.defer()
+            success = await _unlock_channel(ch, opdex_id)
+            await incense_db.set_paused(guild_id, str(ch.id), False)
+            if success:
+                await incense_db.log_action(guild_id, str(interaction.user.id), "unlock", f"Unlocked #{ch.name}")
+                embed = discord.Embed(
+                    title="🔓 Channel Unlocked",
+                    description=f"{ch.mention} is now live. Pokémon will start spawning! 🎉",
+                    colour=0x57F287,
+                )
+                embed.set_footer(text=make_footer(guild_id, "Incense Manager"))
+                await interaction.followup.send(embed=embed)
+                if ch.id != interaction.channel_id:
+                    try:
+                        resume_embed = discord.Embed(
+                            title="▶️ Incense Live!",
+                            description="The incense is now **active** — Pokémon are spawning! Good luck! 🎉",
+                            colour=0x57F287,
+                        )
+                        resume_embed.set_footer(text=make_footer(guild_id, "Use !pause to pause all incenses"))
+                        await ch.send(embed=resume_embed)
+                    except discord.Forbidden:
+                        pass
+            else:
+                err = discord.Embed(
+                    title="❌ Unlock Failed",
+                    description=(
+                        f"I couldn't unlock {ch.mention}.\n\n"
+                        "Please check that I have **Manage Channel** and **Manage Roles** permissions."
+                    ),
+                    colour=0xED4245,
+                )
+                err.set_footer(text=make_footer(guild_id, "Incense Manager"))
+                await interaction.followup.send(embed=err, ephemeral=True)
+            return
+
+        # Multi-channel path
         await interaction.response.defer()
-        success = await _unlock_channel(ch, opdex_id)
-        await incense_db.set_paused(guild_id, str(ch.id), False)
+        registered_ids = set(await incense_db.get_channels(guild_id))
+        unlocked: list[str]     = []
+        already: list[str]      = []
+        failed: list[str]       = []
+        not_registered: list[str] = []
 
-        if success:
+        async def _do_unlock(ch: discord.TextChannel):
+            cid = str(ch.id)
+            if cid not in registered_ids:
+                not_registered.append(cid)
+                return
+            if not _is_channel_locked(ch, opdex_id):
+                already.append(cid)
+                return
+            ok = await _unlock_channel(ch, opdex_id)
+            if ok:
+                await incense_db.set_paused(guild_id, cid, False)
+                unlocked.append(cid)
+                if ch.id != interaction.channel_id:
+                    try:
+                        live_embed = discord.Embed(
+                            title="▶️ Incense Live!",
+                            description="The incense is now **active** — Pokémon are spawning! Good luck! 🎉",
+                            colour=0x57F287,
+                        )
+                        live_embed.set_footer(text=make_footer(guild_id, "Use !pause to pause all incenses"))
+                        await ch.send(embed=live_embed)
+                    except discord.Forbidden:
+                        pass
+            else:
+                failed.append(cid)
+
+        await asyncio.gather(*[_do_unlock(ch) for ch in unique])
+
+        if unlocked:
             await incense_db.log_action(
                 guild_id, str(interaction.user.id), "unlock",
-                f"Unlocked #{ch.name}"
+                f"Unlocked {len(unlocked)} channel(s): {', '.join(interaction.guild.get_channel(int(c)).name for c in unlocked[:10] if interaction.guild.get_channel(int(c)))}"
             )
-            embed = discord.Embed(
-                title="🔓 Channel Unlocked",
-                description=f"{ch.mention} is now live. Pokémon will start spawning! 🎉",
-                colour=0x57F287,
-            )
-            embed.set_footer(text=make_footer(guild_id, "Incense Manager"))
-            await interaction.followup.send(embed=embed)
-            if ch.id != interaction.channel_id:
-                try:
-                    resume_embed = discord.Embed(
-                        title="▶️ Incense Live!",
-                        description="The incense is now **active** — Pokémon are spawning! Good luck! 🎉",
-                        colour=0x57F287,
-                    )
-                    resume_embed.set_footer(text=make_footer(guild_id, "Use !pause to pause all incenses"))
-                    await ch.send(embed=resume_embed)
-                except discord.Forbidden:
-                    pass
-        else:
-            err_embed = discord.Embed(
-                title="❌ Unlock Failed",
-                description=(
-                    f"I couldn't unlock {ch.mention}.\n\n"
-                    "Please check that I have **Manage Channel** and **Manage Roles** permissions."
-                ),
-                colour=0xED4245,
-            )
-            err_embed.set_footer(text=make_footer(guild_id, "Incense Manager"))
-            await interaction.followup.send(embed=err_embed, ephemeral=True)
+
+        colour = 0xED4245 if failed else (0xFEE75C if not unlocked else 0x57F287)
+        embed = discord.Embed(title="🔓 Channels Unlocked", colour=colour)
+        parts = []
+        if unlocked: parts.append(f"🔓 **{len(unlocked)}** unlocked")
+        if already:  parts.append(f"⏭️ **{len(already)}** already unlocked")
+        if failed:   parts.append(f"⚠️ **{len(failed)}** failed")
+        if not_registered: parts.append(f"❓ **{len(not_registered)}** not registered")
+        embed.description = "  •  ".join(parts) if parts else "Nothing to do."
+
+        guild = interaction.guild
+        if unlocked:
+            _add_two_col(embed, f"🔓 Unlocked ({len(unlocked)})", [f"<#{c}>" for c in _sort_channel_ids(guild, unlocked)])
+        if already:
+            _add_two_col(embed, f"⏭️ Already unlocked ({len(already)})", [f"<#{c}>" for c in _sort_channel_ids(guild, already)])
+        if failed:
+            _add_two_col(embed, f"⚠️ Failed ({len(failed)})", [f"<#{c}>" for c in _sort_channel_ids(guild, failed)])
+        if not_registered:
+            _add_two_col(embed, f"❓ Not registered ({len(not_registered)})", [f"<#{c}>" for c in not_registered])
+        embed.set_footer(text=make_footer(guild_id, "Incense Manager"))
+        await interaction.followup.send(embed=embed)
 
     # ── /incense recursive ───────────────────────────────────────────────────
 
@@ -1641,6 +1957,291 @@ class IncenseCog(commands.Cog):
                 f"Registered {len(added)} channels recursively"
             )
         await interaction.followup.send(embed=embed)
+
+    # ── /incense lock-all ────────────────────────────────────────────────────
+
+    @incense.command(name="lock-all", description="Lock all active incense channels (or just a named group).")
+    @app_commands.describe(group="Optional group name to target only that group's channels")
+    @app_commands.autocomplete(group=_group_name_autocomplete)
+    async def inc_lock_all(self, interaction: discord.Interaction, group: str = ""):
+        if not _is_qt_guild(interaction):
+            return await interaction.response.send_message(_NOT_QT_MSG, ephemeral=True)
+        if not await _is_authorised(interaction):
+            return await interaction.response.send_message("🚫 You need the **Incense Manager** role.", ephemeral=True)
+
+        guild_id = str(interaction.guild_id)
+        opdex_id = await _get_opdex_id(guild_id)
+        group    = group.strip().lower()
+
+        if group:
+            if not await incense_db.group_exists(guild_id, group):
+                known = await incense_db.get_groups(guild_id)
+                known_str = ", ".join(f"**{g}**" for g in known) if known else "*none created yet*"
+                return await interaction.response.send_message(
+                    f"⚠️ No group named **{group}**. Known groups: {known_str}", ephemeral=True
+                )
+            candidate_ids = await incense_db.get_group_channels(guild_id, group)
+        else:
+            candidate_ids = await incense_db.get_channels(guild_id)
+
+        known_active_ids = {r["channel_id"] for r in await incense_db.get_active_incenses(guild_id)}
+        unregistered = [c for c in candidate_ids if c not in known_active_ids]
+        if unregistered:
+            await _resync_unregistered_channels(
+                interaction.guild, guild_id, unregistered, opdex_id, str(self.bot.user.id)
+            )
+
+        actives = (
+            await incense_db.get_active_incenses_for_group(guild_id, group)
+            if group else
+            await incense_db.get_active_incenses(guild_id)
+        )
+
+        if not actives:
+            scope = f"group **{group}**" if group else "any registered channel"
+            return await interaction.response.send_message(
+                embed=discord.Embed(
+                    title="ℹ️ Nothing to Lock",
+                    description=f"No active incenses are running in {scope}.",
+                    colour=0x5865F2,
+                ),
+                ephemeral=True,
+            )
+
+        await interaction.response.defer()
+
+        locked: list[str]  = []
+        already: list[str] = []
+        failed: list[str]  = []
+        cleaned: list[str] = []
+
+        async def _process(record: dict):
+            ch = interaction.guild.get_channel(int(record["channel_id"]))
+            if not ch:
+                await incense_db.remove_channel_and_incense(guild_id, record["channel_id"])
+                cleaned.append(record["channel_id"])
+                return
+            if record["paused"] or _is_channel_locked(ch, opdex_id):
+                already.append(record["channel_id"])
+                await incense_db.set_paused(guild_id, record["channel_id"], True)
+                return
+            ok = await _lock_channel(ch, opdex_id)
+            if ok:
+                await incense_db.set_paused(guild_id, record["channel_id"], True)
+                locked.append(record["channel_id"])
+            else:
+                failed.append(record["channel_id"])
+
+        await asyncio.gather(*[_process(r) for r in actives])
+
+        action = f"mass_pause:{group}" if group else "mass_pause"
+        await incense_db.log_action(
+            guild_id, str(interaction.user.id), action,
+            f"lock-all: locked {len(locked)}, already {len(already)}, failed {len(failed)}, cleaned {len(cleaned)}"
+            + (f" [group={group}]" if group else "")
+        )
+        embed = _pause_embed(locked, already, failed, cleaned, guild_id, interaction.guild)
+        if group:
+            embed.title = f"⏸️  Mass Incense Paused — {group}"
+        await interaction.followup.send(embed=embed)
+
+    # ── /incense unlock-all ──────────────────────────────────────────────────
+
+    @incense.command(name="unlock-all", description="Unlock all paused incense channels (or just a named group).")
+    @app_commands.describe(group="Optional group name to target only that group's channels")
+    @app_commands.autocomplete(group=_group_name_autocomplete)
+    async def inc_unlock_all(self, interaction: discord.Interaction, group: str = ""):
+        if not _is_qt_guild(interaction):
+            return await interaction.response.send_message(_NOT_QT_MSG, ephemeral=True)
+        if not await _is_authorised(interaction):
+            return await interaction.response.send_message("🚫 You need the **Incense Manager** role.", ephemeral=True)
+
+        guild_id = str(interaction.guild_id)
+        opdex_id = await _get_opdex_id(guild_id)
+        group    = group.strip().lower()
+
+        if group:
+            if not await incense_db.group_exists(guild_id, group):
+                known = await incense_db.get_groups(guild_id)
+                known_str = ", ".join(f"**{g}**" for g in known) if known else "*none created yet*"
+                return await interaction.response.send_message(
+                    f"⚠️ No group named **{group}**. Known groups: {known_str}", ephemeral=True
+                )
+            candidate_ids = await incense_db.get_group_channels(guild_id, group)
+        else:
+            candidate_ids = await incense_db.get_channels(guild_id)
+
+        known_active_ids = {r["channel_id"] for r in await incense_db.get_active_incenses(guild_id)}
+        unregistered = [c for c in candidate_ids if c not in known_active_ids]
+        if unregistered:
+            await _resync_unregistered_channels(
+                interaction.guild, guild_id, unregistered, opdex_id, str(self.bot.user.id)
+            )
+
+        actives = (
+            await incense_db.get_active_incenses_for_group(guild_id, group)
+            if group else
+            await incense_db.get_active_incenses(guild_id)
+        )
+
+        if not actives:
+            scope = f"group **{group}**" if group else "any registered channel"
+            return await interaction.response.send_message(
+                embed=discord.Embed(
+                    title="ℹ️ Nothing to Unlock",
+                    description=f"No active incenses are paused in {scope}.",
+                    colour=0x5865F2,
+                ),
+                ephemeral=True,
+            )
+
+        await interaction.response.defer()
+
+        unlocked: list[str] = []
+        already: list[str]  = []
+        failed: list[str]   = []
+        cleaned: list[str]  = []
+
+        async def _process(record: dict):
+            ch = interaction.guild.get_channel(int(record["channel_id"]))
+            if not ch:
+                await incense_db.remove_channel_and_incense(guild_id, record["channel_id"])
+                cleaned.append(record["channel_id"])
+                return
+            if not record["paused"] and not _is_channel_locked(ch, opdex_id):
+                already.append(record["channel_id"])
+                return
+            ok = await _unlock_channel(ch, opdex_id)
+            if ok:
+                await incense_db.set_paused(guild_id, record["channel_id"], False)
+                unlocked.append(record["channel_id"])
+                try:
+                    resume_embed = discord.Embed(
+                        title="▶️ Incense Live!",
+                        description="The incense is now **active** — Pokémon are spawning! Good luck, trainers! 🎉",
+                        colour=0x57F287,
+                    )
+                    footer_hint = f"Use !pause {group} to pause this group" if group else "Use !pause to pause all incenses"
+                    resume_embed.set_footer(text=make_footer(guild_id, footer_hint))
+                    await ch.send(embed=resume_embed)
+                except discord.Forbidden:
+                    pass
+            else:
+                failed.append(record["channel_id"])
+
+        await asyncio.gather(*[_process(r) for r in actives])
+
+        action = f"mass_resume:{group}" if group else "mass_resume"
+        await incense_db.log_action(
+            guild_id, str(interaction.user.id), action,
+            f"unlock-all: unlocked {len(unlocked)}, already {len(already)}, failed {len(failed)}, cleaned {len(cleaned)}"
+            + (f" [group={group}]" if group else "")
+        )
+        embed = _resume_embed(unlocked, already, failed, cleaned, guild_id, interaction.guild)
+        if group:
+            embed.title = f"▶️  Mass Incense Resumed — {group}"
+        await interaction.followup.send(embed=embed)
+
+    # ── /incense channel-info ────────────────────────────────────────────────
+
+    @incense.command(name="channel-info", description="Show detailed info for an incense channel with lock/unlock buttons.")
+    @app_commands.describe(channel="Channel to inspect (defaults to current channel)")
+    async def inc_channel_info(
+        self,
+        interaction: discord.Interaction,
+        channel: Optional[discord.TextChannel] = None,
+    ):
+        if not _is_qt_guild(interaction):
+            return await interaction.response.send_message(_NOT_QT_MSG, ephemeral=True)
+        if not await _is_authorised(interaction):
+            return await interaction.response.send_message("🚫 You need the **Incense Manager** role.", ephemeral=True)
+
+        ch       = channel or interaction.channel
+        guild_id = str(interaction.guild_id)
+        opdex_id = await _get_opdex_id(guild_id)
+
+        await interaction.response.defer(ephemeral=True)
+
+        is_registered = await incense_db.is_incense_channel(guild_id, str(ch.id))
+        is_locked     = _is_channel_locked(ch, opdex_id)
+        active        = None
+        if is_registered:
+            actives = await incense_db.get_active_incenses(guild_id)
+            active = next((r for r in actives if r["channel_id"] == str(ch.id)), None)
+
+        # Which groups is this channel in?
+        all_groups = await incense_db.get_groups(guild_id)
+        member_of: list[str] = []
+        for g in all_groups:
+            gcids = await incense_db.get_group_channels(guild_id, g)
+            if str(ch.id) in gcids:
+                member_of.append(g)
+
+        # Recent audit log entries for this channel
+        log_entries = await incense_db.get_audit_log(guild_id, limit=5, channel_id=str(ch.id))
+
+        # ── Build embed ──
+        if not is_registered:
+            state_line = "❌ Not a registered incense channel"
+            colour = 0x808080
+        elif active:
+            if is_locked or active["paused"]:
+                state_line = "⏸️ **Paused** (locked)"
+                colour = 0xFF6B35
+            else:
+                state_line = "▶️ **Live** (incense active)"
+                colour = 0x57F287
+        else:
+            state_line = "💤 **Idle** (no active incense)"
+            colour = 0x5865F2
+
+        embed = discord.Embed(
+            title=f"📍 #{ch.name}",
+            description=state_line,
+            colour=colour,
+        )
+        embed.add_field(name="Channel", value=ch.mention, inline=True)
+        embed.add_field(name="Lock state", value="🔒 Locked" if is_locked else "🔓 Unlocked", inline=True)
+        embed.add_field(name="Registered", value="✅ Yes" if is_registered else "❌ No", inline=True)
+
+        if active:
+            embed.add_field(name="Incense type", value=active.get("incense_type") or "Standard", inline=True)
+            spawns = active.get("total_spawns") or active.get("spawns_remaining") or "—"
+            embed.add_field(name="Spawns", value=str(spawns), inline=True)
+            embed.add_field(name="​", value="​", inline=True)
+
+        embed.add_field(
+            name="Groups",
+            value=", ".join(f"**{g}**" for g in member_of) if member_of else "*None*",
+            inline=False,
+        )
+
+        if log_entries:
+            ACTION_EMOJI = {
+                "auto_lock": "🔒", "lock": "🔒", "unlock": "🔓",
+                "mass_pause": "⏸️", "mass_resume": "▶️",
+                "register": "➕", "bulk_register": "➕", "clear": "🗑️",
+            }
+            log_lines = []
+            for e in log_entries:
+                emoji = ACTION_EMOJI.get(e["action"], "📝")
+                ts    = e["created_at"][:16].replace("T", " ")
+                log_lines.append(f"`{ts}` {emoji} <@{e['user_id']}> **{e['action']}**")
+            embed.add_field(name="📋 Recent activity", value="\n".join(log_lines), inline=False)
+
+        embed.set_footer(text=make_footer(guild_id, "Incense Manager  •  channel-info"))
+
+        view = None
+        if is_registered:
+            view = _ChannelInfoView(
+                author_id = interaction.user.id,
+                channel   = ch,
+                guild_id  = guild_id,
+                opdex_id  = opdex_id,
+                is_locked = is_locked,
+            )
+
+        await interaction.followup.send(embed=embed, view=view, ephemeral=True)
 
     # ── /incense status ──────────────────────────────────────────────────────
 

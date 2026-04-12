@@ -237,8 +237,12 @@ def _section_incense(gid: str, is_admin: bool = False) -> tuple[str, str, discor
     embed.add_field(
         name="🔧 Manual lock / resync",
         value=(
-            "`/incense lock [channel]`  — Lock a specific channel\n"
-            "`/incense unlock [channel]`  — Unlock a specific channel\n"
+            "`/incense lock`  — Lock one or more channels (single, category, range)\n"
+            "`/incense unlock`  — Unlock one or more channels (same flexible selectors)\n"
+            "`/incense lock-all [group]`  — Lock **all** active channels at once (slash equiv. of `!pause`)\n"
+            "`/incense unlock-all [group]`  — Unlock **all** paused channels at once (slash equiv. of `!resume`)\n"
+            "`/incense channel-info [channel]`  — Detailed state, incense info, groups & recent log\n"
+            "   ↳ Includes **🔒 Lock** / **🔓 Unlock** buttons to act immediately\n"
             "`/incense resync`  — Scan history, fix any missed locks, clean old bot messages\n"
             "   ↳ *Use this when a pre-existing or 'cracked' incense wasn't detected*"
         ),
