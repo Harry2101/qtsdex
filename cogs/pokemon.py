@@ -218,6 +218,7 @@ class PokemonView(discord.ui.View):
         self.clear_items()
 
         movelist_btn = discord.ui.Button(
+            label="Move List",
             emoji="📋",
             style=discord.ButtonStyle.secondary,
             row=0,
@@ -226,14 +227,16 @@ class PokemonView(discord.ui.View):
         self.add_item(movelist_btn)
 
         meta_btn = discord.ui.Button(
-            emoji="📊" if not self.meta_shown else "❌",
-            style=discord.ButtonStyle.secondary if not self.meta_shown else discord.ButtonStyle.danger,
+            label="Meta" if not self.meta_shown else "Hide Meta",
+            emoji="📊" if not self.meta_shown else "✅",
+            style=discord.ButtonStyle.secondary if not self.meta_shown else discord.ButtonStyle.success,
             row=0,
         )
         meta_btn.callback = self._go_meta
         self.add_item(meta_btn)
 
         search_btn = discord.ui.Button(
+            label="Search",
             emoji="🔍",
             style=discord.ButtonStyle.secondary,
             row=0,
