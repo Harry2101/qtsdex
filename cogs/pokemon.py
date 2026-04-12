@@ -15,6 +15,7 @@ from utils.embeds import (
     FOOTER, error_embed, type_badges, type_colour,
     build_stat_lines, TYPE_EMOJI, DAMAGE_CLASS_EMOJI, make_footer,
 )
+from utils.limitless import fetch_meta
 from utils.normalizer import normalize
 from utils.type_chart import group_by_multiplier
 
@@ -192,6 +193,57 @@ def build_battle_embed(
     return embed
 
 
+# ── VGC meta embed ────────────────────────────────────────────────────────────
+
+def _meta_lines(entries: list[dict]) -> str:
+    if not entries:
+        return "*No data*"
+    return "\n".join(f"**{e['name']}** — `{e['pct']}`" for e in entries)
+
+
+def build_meta_embed(
+    meta: dict,
+    name: str,
+    colour: int,
+    guild_id: str = "",
+    pokemon_arg: str = "",
+) -> discord.Embed:
+    embed = discord.Embed(
+        title=f"{name} — VGC Meta Usage",
+        description="Tournament usage stats from [Limitless VGC](https://limitlessvgc.com/)",
+        colour=colour,
+    )
+
+    if meta.get("partners"):
+        embed.add_field(
+            name="👥 Top Partners",
+            value=_meta_lines(meta["partners"]),
+            inline=False,
+        )
+    if meta.get("items"):
+        embed.add_field(
+            name="🎒 Top Items",
+            value=_meta_lines(meta["items"]),
+            inline=False,
+        )
+    if meta.get("moves"):
+        embed.add_field(
+            name="⚔️ Top Moves",
+            value=_meta_lines(meta["moves"]),
+            inline=False,
+        )
+    if meta.get("abilities"):
+        embed.add_field(
+            name="🔮 Abilities",
+            value=_meta_lines(meta["abilities"]),
+            inline=False,
+        )
+
+    suffix = f"/pokemon {pokemon_arg}" if pokemon_arg else ""
+    embed.set_footer(text=make_footer(guild_id, suffix))
+    return embed
+
+
 # ── View ──────────────────────────────────────────────────────────────────────
 
 class PokemonView(discord.ui.View):
@@ -223,6 +275,14 @@ class PokemonView(discord.ui.View):
         )
         movelist_btn.callback = self._go_moves
         self.add_item(movelist_btn)
+
+        meta_btn = discord.ui.Button(
+            label="📊 VGC Meta",
+            style=discord.ButtonStyle.secondary,
+            row=0,
+        )
+        meta_btn.callback = self._go_meta
+        self.add_item(meta_btn)
 
     def _guard(self, interaction: discord.Interaction) -> bool:
         return interaction.user.id == self.user_id
@@ -280,6 +340,30 @@ class PokemonView(discord.ui.View):
         await view.ensure_fetched()
         view._sync_buttons()
         await interaction.followup.send(embed=view.embed(), view=view)
+
+    async def _go_meta(self, interaction: discord.Interaction):
+        if not self._guard(interaction):
+            return await interaction.response.send_message(
+                "Only the person who ran this command can do that.", ephemeral=True
+            )
+        await interaction.response.defer(thinking=True)
+
+        name   = self.data["name"].replace("-", " ").title()
+        types  = [t["type"]["name"] for t in self.data["types"]]
+        colour = type_colour(types[0])
+
+        meta = await fetch_meta(self.data["name"])
+        if not meta:
+            return await interaction.followup.send(
+                embed=error_embed(
+                    "No VGC Data",
+                    f"**{name}** has no usage data on Limitless VGC.",
+                ),
+                ephemeral=True,
+            )
+
+        embed = build_meta_embed(meta, name, colour, self.guild_id, self.pokemon_arg)
+        await interaction.followup.send(embed=embed)
 
 
 # ── Cog ───────────────────────────────────────────────────────────────────────
