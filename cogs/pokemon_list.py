@@ -162,7 +162,7 @@ class PokemonListCog(commands.Cog):
                 f"Invalid category. Use one of: {', '.join(pokemon_list_db.CATEGORY_TYPES)}", ephemeral=True,
             )
 
-        await interaction.response.defer(ephemeral=True)
+        await interaction.response.defer()
 
         forms = await _fetch_forms(name)
         if forms is None:
@@ -180,7 +180,6 @@ class PokemonListCog(commands.Cog):
         await interaction.followup.send(
             f"Added **{base_name}** to **{category}** ({added} new, {existed} existed).\n"
             f"Forms: {form_list}",
-            ephemeral=True,
         )
 
     # -- /pokemon_list remove ------------------------------------------------
@@ -194,7 +193,7 @@ class PokemonListCog(commands.Cog):
         count = await pokemon_list_db.remove_pokemon(name)
         if count == 0:
             return await interaction.response.send_message(f"**{name}** not found in any list.", ephemeral=True)
-        await interaction.response.send_message(f"Removed **{name}** ({count} form entries deleted).", ephemeral=True)
+        await interaction.response.send_message(f"Removed **{name}** ({count} form entries deleted).")
 
     # -- /pokemon_list view --------------------------------------------------
 
@@ -246,7 +245,7 @@ class PokemonListCog(commands.Cog):
         eid = await pokemon_list_db.create_event(name)
         if eid is None:
             return await interaction.response.send_message(f"Event **{name}** already exists.", ephemeral=True)
-        await interaction.response.send_message(f"Event **{name}** created (ID {eid}).", ephemeral=True)
+        await interaction.response.send_message(f"Event **{name}** created (ID {eid}).")
 
     # -- /pokemon_list event delete ------------------------------------------
 
@@ -259,7 +258,7 @@ class PokemonListCog(commands.Cog):
         ok = await pokemon_list_db.delete_event(event)
         if not ok:
             return await interaction.response.send_message(f"Event **{event}** not found.", ephemeral=True)
-        await interaction.response.send_message(f"Event **{event}** deleted.", ephemeral=True)
+        await interaction.response.send_message(f"Event **{event}** deleted.")
 
     # -- /pokemon_list event add ---------------------------------------------
 
@@ -275,7 +274,7 @@ class PokemonListCog(commands.Cog):
         ok = await pokemon_list_db.add_event_entry(ev["id"], pokemon)
         if not ok:
             return await interaction.response.send_message(f"**{pokemon}** already in **{event}**.", ephemeral=True)
-        await interaction.response.send_message(f"Added **{pokemon}** to **{event}**.", ephemeral=True)
+        await interaction.response.send_message(f"Added **{pokemon}** to **{event}**.")
 
     # -- /pokemon_list event remove ------------------------------------------
 
@@ -291,7 +290,7 @@ class PokemonListCog(commands.Cog):
         ok = await pokemon_list_db.remove_event_entry(ev["id"], pokemon)
         if not ok:
             return await interaction.response.send_message(f"**{pokemon}** not in **{event}**.", ephemeral=True)
-        await interaction.response.send_message(f"Removed **{pokemon}** from **{event}**.", ephemeral=True)
+        await interaction.response.send_message(f"Removed **{pokemon}** from **{event}**.")
 
     # -- /pokemon_list event view --------------------------------------------
 
