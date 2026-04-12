@@ -700,7 +700,7 @@ class HelpCog(commands.Cog):
         show_incense = is_qt and await _can_see_incense(interaction)
         admin        = _is_admin(interaction)
 
-        sections = await self._build_sections(interaction, gid, admin, show_incense)
+        sections = await self._build_sections(gid, admin, show_incense)
         view     = HelpView(sections, bot_name, gid, interaction.user.id)
 
         # If a section was requested, find and open it directly
