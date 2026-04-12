@@ -227,20 +227,21 @@ def build_moves_embed(
 # ── View ──────────────────────────────────────────────────────────────────────
 
 class PokemonView(discord.ui.View):
-    def __init__(self, data: dict, user_id: int, guild_id: str = ""):
+    def __init__(self, data: dict, user_id: int, guild_id: str = "", ability_effects: dict[str, str] | None = None):
         super().__init__(timeout=180)
         self.data             = data
         self.user_id          = user_id
         self.guild_id         = guild_id
         self.top_moves:       list[dict]     = []
-        self.ability_effects: dict[str, str] = {}
+        self.ability_effects: dict[str, str] = ability_effects or {}
+        self.moves_shown      = False
         self._sync_buttons()
 
     def _sync_buttons(self):
         self.clear_items()
         moves_btn = discord.ui.Button(
-            label="⚔️ Strongest Moves",
-            style=discord.ButtonStyle.secondary,
+            label="⚔️ Strongest Moves" if not self.moves_shown else "❌ Hide Moves",
+            style=discord.ButtonStyle.secondary if not self.moves_shown else discord.ButtonStyle.danger,
             row=0,
         )
         moves_btn.callback = self._go_top_moves
@@ -262,14 +263,29 @@ class PokemonView(discord.ui.View):
             return await interaction.response.send_message(
                 "Only the person who ran this command can do that.", ephemeral=True
             )
-        await interaction.response.defer(thinking=True)
-        if not self.top_moves or not self.ability_effects:
-            self.top_moves, self.ability_effects = await asyncio.gather(
-                fetch_top_moves(self.data.get("moves", [])),
-                fetch_ability_effects(self.data.get("abilities", [])),
+        await interaction.response.defer()
+
+        if not self.top_moves:
+            self.top_moves = await fetch_top_moves(self.data.get("moves", []))
+
+        self.moves_shown = not self.moves_shown
+        self._sync_buttons()
+
+        base_embed = build_battle_embed(self.data, self.ability_effects, self.guild_id)
+
+        if self.moves_shown:
+            warning = (
+                "> ⚠️ **Ranked by base power only** — does not account for accuracy, coverage, sets, or meta.\n"
+                f"> Check [Smogon](https://www.smogon.com/) or ping <@&{DUELERS_ROLE_ID}> for real advice."
             )
-        embed = build_moves_embed(self.data, self.top_moves, self.guild_id)
-        await interaction.followup.send(embed=embed, ephemeral=True)
+            base_embed.add_field(name="\u200b", value=warning, inline=False)
+            base_embed.add_field(
+                name="⚔️ Strongest Moves",
+                value=_battle_move_lines(self.top_moves),
+                inline=False,
+            )
+
+        await interaction.edit_original_response(embed=base_embed, view=self)
 
     async def _go_moves(self, interaction: discord.Interaction):
         if not self._guard(interaction):
@@ -319,10 +335,9 @@ class PokemonCog(commands.Cog):
                 ephemeral=True,
             )
 
-        gid  = str(interaction.guild_id or "")
-        view = PokemonView(data=data, user_id=interaction.user.id, guild_id=gid)
-
+        gid             = str(interaction.guild_id or "")
         ability_effects = await fetch_ability_effects(data.get("abilities", []))
+        view = PokemonView(data=data, user_id=interaction.user.id, guild_id=gid, ability_effects=ability_effects)
         embed = build_battle_embed(data, ability_effects, gid)
 
         await interaction.followup.send(embed=embed, view=view)
