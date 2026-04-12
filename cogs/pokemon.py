@@ -245,7 +245,7 @@ class PokemonView(discord.ui.View):
         if self.moves_shown:
             warning = (
                 "> ⚠️ **Ranked by base power only** — does not account for accuracy, coverage, sets, or meta.\n"
-                f"> Check [Smogon](https://www.smogon.com/) or ping <@&{DUELERS_ROLE_ID}> for real advice."
+                f"> For real move advice, do some research or ping <@&{DUELERS_ROLE_ID}>!"
             )
             base_embed.add_field(name="\u200b", value=warning, inline=False)
             base_embed.add_field(
