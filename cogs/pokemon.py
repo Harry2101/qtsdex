@@ -17,7 +17,7 @@ from utils.embeds import (
 )
 from utils.limitless import fetch_meta
 from utils.normalizer import normalize
-from utils.type_chart import group_by_multiplier
+from utils.type_chart import group_by_multiplier_with_ability, ability_alters_matchups
 
 # Lazy import to avoid circular — moves cog helpers imported inline in _go_moves
 
@@ -137,8 +137,28 @@ def build_battle_embed(
     t2    = types[1] if len(types) > 1 else None
     total = sum(stats.values())
 
-    role    = classify_role(stats)
-    buckets = group_by_multiplier(t1, t2)
+    role = classify_role(stats)
+
+    # Pick the canonical ability for matchup calc:
+    # sole ability if only one, else meta-top ability, else first non-hidden.
+    abilities_raw = data.get("abilities", [])
+    canonical_ability: str | None = None
+    if len(abilities_raw) == 1:
+        canonical_ability = abilities_raw[0]["ability"]["name"]
+    elif meta and meta.get("abilities"):
+        meta_top = meta["abilities"][0]["name"].lower().replace(" ", "-")
+        if any(a["ability"]["name"] == meta_top for a in abilities_raw):
+            canonical_ability = meta_top
+    if not canonical_ability and abilities_raw:
+        for a in abilities_raw:
+            if not a.get("is_hidden"):
+                canonical_ability = a["ability"]["name"]
+                break
+        if not canonical_ability:
+            canonical_ability = abilities_raw[0]["ability"]["name"]
+
+    matchup_ability = canonical_ability if ability_alters_matchups(canonical_ability) else None
+    buckets, ability_note = group_by_multiplier_with_ability(t1, t2, matchup_ability)
 
     embed = discord.Embed(
         title=f"#{dex:04d}  {name}",
@@ -162,9 +182,15 @@ def build_battle_embed(
             weak_parts.append(f"**{label}** {_fmt_weak(lst)}")
 
     if weak_parts:
+        matchup_title = "🎯 Type Matchups"
+        if matchup_ability:
+            matchup_title += f" (with {matchup_ability.replace('-', ' ').title()})"
+        value = "\n".join(weak_parts)
+        if ability_note:
+            value = f"> ⚠️ *{ability_note}*\n{value}"
         embed.add_field(
-            name="🎯 Type Matchups",
-            value="\n".join(weak_parts),
+            name=matchup_title,
+            value=value,
             inline=False,
         )
 
@@ -190,10 +216,11 @@ def build_battle_embed(
         tag    = " `H`" if a["is_hidden"] else ""
         effect = ability_effects.get(slug, "")
         highlight = "✅ " if top_meta_ability and slug.replace("-", " ") == top_meta_ability else ""
+        shield = " 🛡️" if ability_alters_matchups(slug) else ""
         if effect:
-            ability_lines.append(f"{highlight}**{label}**{tag} — {effect}")
+            ability_lines.append(f"{highlight}**{label}**{tag}{shield} — {effect}")
         else:
-            ability_lines.append(f"{highlight}**{label}**{tag}")
+            ability_lines.append(f"{highlight}**{label}**{tag}{shield}")
 
     embed.add_field(
         name="🔮 Abilities",

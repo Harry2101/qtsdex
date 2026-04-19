@@ -113,6 +113,18 @@ def apply_ability(chart: dict[str, float], ability: str | None) -> tuple[dict[st
     return new, f"{label} — matchups adjusted."
 
 
+_MATCHUP_ABILITIES = (
+    set(_ABILITY_IMMUNITIES.keys())
+    | {"wonder-guard", "filter", "solid-rock", "prism-armor"}
+)
+
+
+def ability_alters_matchups(ability: str | None) -> bool:
+    if not ability:
+        return False
+    return ability.lower().replace("_", "-") in _MATCHUP_ABILITIES
+
+
 def group_by_multiplier_with_ability(
     t1: str, t2: str | None = None, ability: str | None = None
 ) -> tuple[dict[str, list[str]], str | None]:
