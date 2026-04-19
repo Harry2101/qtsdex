@@ -18,6 +18,7 @@ from utils.embeds import (
 from utils.limitless import fetch_meta
 from utils.normalizer import normalize
 from utils.type_chart import group_by_multiplier_with_ability, ability_alters_matchups
+from utils.user_prefs import get as get_pref, set_pref
 
 # Lazy import to avoid circular — moves cog helpers imported inline in _go_moves
 
@@ -185,9 +186,9 @@ def build_battle_embed(
         matchup_title = "🎯 Type Matchups"
         if matchup_ability:
             matchup_title += f" (with {matchup_ability.replace('-', ' ').title()})"
-        value = "\n".join(weak_parts)
+        value = "\n\n".join(weak_parts)
         if ability_note:
-            value = f"> ⚠️ *{ability_note}*\n{value}"
+            value = f"> ⚠️ *{ability_note}*\n\n{value}"
         embed.add_field(
             name=matchup_title,
             value=value,
@@ -372,6 +373,7 @@ class PokemonView(discord.ui.View):
             )
 
         self.meta_shown = not self.meta_shown
+        set_pref(self.user_id, "pokemon_meta_shown", self.meta_shown)
         self._sync_buttons()
 
         embed = build_battle_embed(
@@ -499,8 +501,27 @@ class PokemonCog(commands.Cog):
 
         gid             = str(interaction.guild_id or "")
         ability_effects = await fetch_ability_effects(data.get("abilities", []))
-        view  = PokemonView(data=data, user_id=interaction.user.id, guild_id=gid, ability_effects=ability_effects, pokemon_arg=pokemon, varieties=varieties)
-        embed = build_battle_embed(data, ability_effects, gid, pokemon)
+
+        meta_pref = bool(get_pref(interaction.user.id, "pokemon_meta_shown"))
+        cached_meta = await fetch_meta(data["name"]) if meta_pref else None
+        meta_shown = bool(cached_meta)
+
+        view = PokemonView(
+            data=data,
+            user_id=interaction.user.id,
+            guild_id=gid,
+            ability_effects=ability_effects,
+            pokemon_arg=pokemon,
+            varieties=varieties,
+        )
+        view.cached_meta = cached_meta
+        view.meta_shown  = meta_shown
+        view._sync_buttons()
+
+        embed = build_battle_embed(
+            data, ability_effects, gid, pokemon,
+            meta=cached_meta if meta_shown else None,
+        )
 
         if fallback_notice:
             embed.description = f"> ℹ️ {fallback_notice}\n{embed.description}"

@@ -19,6 +19,7 @@ _lock   = asyncio.Lock()
 
 DEFAULTS: dict[str, Any] = {
     "last_pokemon_mode": "info",      # "info" | "battle"
+    "pokemon_meta_shown": False,      # sticky: /pokemon opens with Meta panel if last toggled on
 }
 
 
