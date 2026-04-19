@@ -85,7 +85,7 @@ class WeaknessCog(commands.Cog):
         if chosen_ability:
             description += f"\n**Ability:** {chosen_ability.replace('-', ' ').title()}"
         if ability_note:
-            description += f"\n*{ability_note}*"
+            description += f"\n> ⚠️  *{ability_note}*"
 
         embed = discord.Embed(
             title=f"🔍  {label} — Type Matchups",
@@ -96,15 +96,16 @@ class WeaknessCog(commands.Cog):
             embed.set_thumbnail(url=sprite_url)
 
         buckets_display = [
-            ("🔴 4× Weakness",   buckets["4x"]),
-            ("🟠 2× Weakness",   buckets["2x"]),
-            ("🟢 ½× Resistance", buckets["0.5x"]),
-            ("🟡 ¼× Resistance", buckets["0.25x"]),
-            ("⚫ Immune",        buckets["0x"]),
+            ("🔴 4× Weakness",   buckets["4x"],    True),
+            ("🟠 2× Weakness",   buckets["2x"],    True),
+            ("🟢 ½× Resistance", buckets["0.5x"],  True),
+            ("🟡 ¼× Resistance", buckets["0.25x"], True),
+            ("⚫ Immune",        buckets["0x"],    False),
         ]
-        for label_str, types_list in buckets_display:
+        for label_str, types_list, inline in buckets_display:
             if types_list:
-                embed.add_field(name=label_str, value=_fmt(types_list), inline=False)
+                header = f"{label_str} ({len(types_list)})"
+                embed.add_field(name=header, value=_fmt(types_list), inline=inline)
 
         embed.set_footer(text=make_footer(str(interaction.guild_id or ""), "Gen 6+ rules  •  "))
         await interaction.followup.send(embed=embed)
