@@ -48,12 +48,74 @@ def defending_chart(t1: str, t2: str | None = None) -> dict[str, float]:
 
 def group_by_multiplier(t1: str, t2: str | None = None) -> dict[str, list[str]]:
     chart = defending_chart(t1, t2)
+    return _bucketize(chart)
+
+
+def _bucketize(chart: dict[str, float]) -> dict[str, list[str]]:
     buckets: dict[str, list[str]] = {"4x": [], "2x": [], "1x": [], "0.5x": [], "0.25x": [], "0x": []}
     for atk, m in sorted(chart.items()):
-        if m == 4.0:   buckets["4x"].append(atk)
+        if m >= 4.0:   buckets["4x"].append(atk)
         elif m == 2.0: buckets["2x"].append(atk)
         elif m == 1.0: buckets["1x"].append(atk)
         elif m == 0.5: buckets["0.5x"].append(atk)
         elif m == 0.25: buckets["0.25x"].append(atk)
         elif m == 0.0: buckets["0x"].append(atk)
     return buckets
+
+
+# Abilities that alter defensive type matchups.
+# Each entry maps an ability slug (PokeAPI kebab-case) to a function
+# that mutates the chart dict in place.
+_ABILITY_IMMUNITIES: dict[str, dict[str, float]] = {
+    "levitate":        {"ground": 0.0},
+    "flash-fire":      {"fire": 0.0},
+    "water-absorb":    {"water": 0.0},
+    "dry-skin":        {"water": 0.0},  # fire takes +25% dmg but type mult unchanged
+    "storm-drain":     {"water": 0.0},
+    "volt-absorb":     {"electric": 0.0},
+    "motor-drive":     {"electric": 0.0},
+    "lightning-rod":   {"electric": 0.0},
+    "sap-sipper":      {"grass": 0.0},
+    "earth-eater":     {"ground": 0.0},
+    "well-baked-body": {"fire": 0.0},
+    "purifying-salt":  {"ghost": 0.5},
+    "thick-fat":       {"fire": 0.5, "ice": 0.5},
+    "heatproof":       {"fire": 0.5},
+    "water-bubble":    {"fire": 0.5},
+    "fluffy":          {"fire": 2.0},
+}
+
+
+def apply_ability(chart: dict[str, float], ability: str | None) -> tuple[dict[str, float], str | None]:
+    """Return (modified_chart, note). Note is a short string to show in the embed."""
+    if not ability:
+        return chart, None
+    ability = ability.lower().replace("_", "-")
+
+    if ability == "wonder-guard":
+        new = {atk: (m if m > 1.0 else 0.0) for atk, m in chart.items()}
+        return new, "Wonder Guard — only super-effective moves land."
+
+    if ability in ("filter", "solid-rock", "prism-armor"):
+        new = {atk: (m * 0.75 if m > 1.0 else m) for atk, m in chart.items()}
+        label = {"filter": "Filter", "solid-rock": "Solid Rock", "prism-armor": "Prism Armor"}[ability]
+        return new, f"{label} — super-effective damage reduced (×¾)."
+
+    overrides = _ABILITY_IMMUNITIES.get(ability)
+    if overrides is None:
+        return chart, None
+
+    new = dict(chart)
+    for atk, mult in overrides.items():
+        new[atk] = mult
+
+    label = ability.replace("-", " ").title()
+    return new, f"{label} — matchups adjusted."
+
+
+def group_by_multiplier_with_ability(
+    t1: str, t2: str | None = None, ability: str | None = None
+) -> tuple[dict[str, list[str]], str | None]:
+    chart = defending_chart(t1, t2)
+    chart, note = apply_ability(chart, ability)
+    return _bucketize(chart), note
